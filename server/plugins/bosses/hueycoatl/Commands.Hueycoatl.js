@@ -89,8 +89,21 @@ function hueybuff({ player }) {
   return true;
 }
 
+function hueyinfo({ player }) {
+  const { npcs } = liveFighters(player);
+  if (npcs.length === 0) {
+    player.sendMessage("You have no active Hueycoatl.");
+    return true;
+  }
+  for (const npc of npcs) {
+    player.sendMessage(`${npc.getId?.()}: ${npc.getHitpoints?.()} HP (phase ${npc.getAttribute?.(Shared.ATTR_PHASE) ?? "-"}).`);
+  }
+  return true;
+}
+
 module.exports = function attachCommands(api) {
   core = api.core;
+  api.registerCommand("hueyinfo", hueyinfo, api.core.PlayerRights.DEVELOPER, "Show your Hueycoatl HP and phases");
   api.registerCommand("hueykill", hueykill, api.core.PlayerRights.DEVELOPER, "Defeat your active Hueycoatl");
   api.registerCommand("hueyhp", hueyhp, api.core.PlayerRights.DEVELOPER, "Set the Hueycoatl head hitpoints");
   api.registerCommand("hueytail", hueytail, api.core.PlayerRights.DEVELOPER, "Force the Hueycoatl shield phase");

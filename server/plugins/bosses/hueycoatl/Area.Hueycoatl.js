@@ -351,10 +351,28 @@ function spawnTail(session, area, east) {
   }
 }
 
+/** While any session player stands in the arena, no fighter regenerates. */
+function keepEncounterAlive(event) {
+  const player = event?.player ?? null;
+  if (!player || !inBounds(player)) return;
+  const session = sessionOfPlayer(player);
+  if (!session) return;
+  const fighters = [];
+  if (session.head) fighters.push(session.head);
+  if (session.tail) fighters.push(session.tail);
+  for (const segment of session.segments ?? []) fighters.push(segment);
+  for (const fighter of fighters) {
+    try {
+      fighter?.getCombat?.()?.getLastAttack?.()?.reset?.();
+    } catch (error) { /* best effort */ }
+  }
+}
+
 function attach(pluginApi) {
   api = pluginApi;
   core = pluginApi.core;
   defineAreaClass();
+  pluginApi.onPlayerProcess(keepEncounterAlive);
   pluginApi.persistAttribute(Shared.ATTR_KILLS);
   pluginApi.persistAttribute(Shared.ATTR_BEST);
   pluginApi.persistAttribute(Shared.ATTR_CLAIMED);

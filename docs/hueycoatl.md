@@ -285,9 +285,23 @@ Observed swaps [LOG]: tail break = `npc_huey_tail_break_01` (11723) + same-tick 
 
 "The Hueycoatl shields itself!", peek box ("There are # adventurers ascending the mountain. / The Hueycoatl has been subdued!"), Taala warning dialogue, "The Feathered Serpent" unlock, slide pair ("You slide down the slope..." / "... and land skillfully."). Food/potion/divine/venom lines in the sheets are ambient (player supplies on league worlds), not boss mechanics.
 
-## Combat Achievements (11 tasks, 41 points) [WIKI count; names TODO]
+## Combat Achievements (11 tasks, 41 points) [CACHE enums 3981-3986]
 
-Sourced: `Combat Achievements/Tasks by boss` gives **11 tasks totalling 41 points** for The Hueycoatl. The names live in a Cargo-backed template (`{{Combat Achievements list|The Hueycoatl}}`) with no API access, so the task list itself is still unsourced — Assumption 13. Wire like `CombatAchievements.RoyalTitans.js` once named: kill-count tasks finish themselves off kill reports (KC varp + `combat-achievements:kill`), the unit tracks per-fight state (segment/body damage shares, tail-phase hits taken, shockwaves taken, symbols stood on, prayer points spent, brazier uptime) and answers kill-count/personal-best at login, Araxxor-style.
+Recovered via `server/scripts/dump-huey-ca.ts` (task struct fields 1306/1308/1309/1310/1311). Wired in `CombatAchievements.Hueycoatl.js`: kill counts self-finish off kill reports; the unit decides the rest.
+
+| Id | Name | Tier | Rule |
+| --- | --- | --- | --- |
+| 568 | Hueycoatl Champion | Medium | 1 kill (self-finishing) |
+| 574 | You're a wizard | Medium | Magic-only damage (earth-only approximated; spell-id check open) |
+| 569 | Hueycoatl Adept | Hard | 10 kills (self-finishing) |
+| 572 | Pillar Lover | Hard | Kill with braziers lit |
+| 575 | I'm your son | Hard | 2+ hide-armour pieces worn (30073-30080) |
+| 576 | Hueycoatl Speed-Trialist | Elite | Kill in 2:30 (250 ticks) |
+| 570 | Hueycoatl Veteran | Elite | 25 kills (self-finishing) |
+| 571 | Perfect Hueycoatl | Elite | 5 clean kills without leaving (no lightning/slam/off-prayer hits) |
+| 573 | Is it a bird? | Master | Dragonbane weapons only (22978/30070/21012/21013) |
+| 577 | Hueycoatl Speed-Chaser | Master | 2:30 with 5 or fewer players |
+| 578 | Hueycoatl Speed-Runner | Grandmaster | 2:30 with 3 or fewer players |
 
 ## Data and shared changes
 
@@ -304,6 +318,12 @@ Sourced: `Combat Achievements/Tasks by boss` gives **11 tasks totalling 41 point
 - **Leave any time:** exit slide, teleport, or logout — all drop team size instantly with the same immediacy [WIKI].
 - **Death flow [LOG 227/00086 + WIKI]:** "Oh dear, you are dead!" with `gravestone_creation_death_coord` (3916) set, `gravestone_duration` (10465) = 1500 ticks, `gravestone_visible` (10464) set, prayers cleared — grave spawns at base camp [WIKI], standard retrieval. (1500 ticks ≈ 15 min on the captured league world; confirm live duration.) Whether dying forfeits the run's contribution/loot eligibility is unsourced — Assumption 21.
 - **Logout inside** returns the player outside the entrance on login (Yama-domain precedent) [EST]; rejoin is by chain as normal, subject to the lateness cut [EST].
+
+## Regen and summit access (MCP findings)
+
+- **No-regen while engaged:** the engine heals NPCs unattacked for 20s (10%/tick). Hueycoatl suppresses this two ways (Araxxor precedent): every combat roll involving a fighter resets its clock (Combat.keepAlive), and every tick a session player stands in the bounds resets all fighters (Area.keepEncounterAlive). Verified live: 2000 HP held over 3 idle minutes (was reverting in under 30s). Full disengagement (empty arena) still regens — matches instance-reset semantics; confirm live (Assumption 21).
+- **Summit on foot is sealed in rev-241 cache:** systematic walk probing (20+ waypoints) shows the pocket x<1525/y3282+ unreachable — no gating locs in the logs, raw map collision. Live players identifiably walk it, so this is a cache/map-data discrepancy. Fights test fine via teleport; do not hack collision — file as map-data issue and verify live (Assumption 11).
+- **Segments drifted when aggressive:** body segments walked to the player (stub aggressive:true); set false in monsters-complete.json. Heads/tails stay aggressive.
 
 ## Death handling (tsps side) and multicombat
 
@@ -371,7 +391,7 @@ Manual checklist (for the human pass): fight P1 properly (barrier gating blocked
 10. **Op names.** Head/body/tail op1, shielded/defeated ops, lobby talk ops — all [CACHE] via `dump_ops.ts`.
 11. **Tiles.** Entry/exit landings are [LOG]-exact; summit/pillar/seer/cave tiles are samples [EST]. Survey live before wiring.
 12. **Private fee and flag flow.** 50k/25k at the flag [WIKI]; menu options and the Taala tree above are [LOG]-exact. Remaining: fee dialogue/confirm and group-size selection (WIKI and LOG silent) — record live before wiring.
-13. **CA names.** Count (11) and points (41) are [WIKI]; names sit behind the Cargo template (no API — fetch via browser on the boss page, or read the cache CA enums like RoyalTitans did: "task names are the Wiki's (cache enums confirm)"). Then mirror the RoyalTitans CA unit with per-fight state above.
+13. **CA names — RESOLVED.** Read from cache enums 3981-3986 (see table above); unit implemented and unit-tested. Remaining: live verification of each task firing (only Champion observed live so far).
 14. **Respawn overlap and GIM.** Players mid-arena at respawn get knocked to the start [WIKI]; assumed no damage attached (slide knockdown is the analog [LOG]). No GIM prestige rule found on the wiki (WIKI silent; Royal Titans has one) — check live whether outsiders cost prestige.
 15. **Unshield feedback (P3→P4).** WIKI and LOG silent on what plays when the tail breaks (message? anim? transform back?). Assumed: reverse of the shield sequence (message + anim + transform to normal) — record live.
 16. **Kill ordering.** KC varp (4404), messages and durations above are [LOG]-exact; their tick order relative to drops/corpse swap still to verify live.

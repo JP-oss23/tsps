@@ -248,10 +248,32 @@ function modifyHit(event) {
   }
 }
 
+/** A live encounter must never regenerate (the engine heals an NPC unattacked for 20s). */
+function keepAlive(roll) {
+  const { attacker, target } = roll ?? {};
+  const npc = attacker?.isNpc?.() ? attacker : target?.isNpc?.() ? target : null;
+  if (!npc || !Shared.isFighter(npc.getId?.())) return;
+  const session = npc.getAttribute?.(Shared.ATTR_SESSION) ?? null;
+  const fighters = [];
+  if (session) {
+    if (session.head) fighters.push(session.head);
+    if (session.tail) fighters.push(session.tail);
+    for (const segment of session.segments ?? []) fighters.push(segment);
+  } else {
+    fighters.push(npc);
+  }
+  for (const fighter of fighters) {
+    try {
+      fighter?.getCombat?.()?.getLastAttack?.()?.reset?.();
+    } catch (error) { /* best effort */ }
+  }
+}
+
 function attach(pluginApi) {
   api = pluginApi;
   core = pluginApi.core;
   PrayerHandler = pluginApi.getPrayerHandler();
+  pluginApi.onCombatHitRoll(keepAlive);
   pluginApi.onNpcHitModify(modifyHit);
   pluginApi.registerNpcCombatMethodProvider(
     [core.NpcIdentifiers.THE_HUEYCOATL, core.NpcIdentifiers.HUEYCOATL_TAIL, core.NpcIdentifiers.HUEYCOATL_BODY],

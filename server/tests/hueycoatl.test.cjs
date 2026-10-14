@@ -159,6 +159,16 @@ test("ca: speed, pillar lover, son, wizard, bird, perfect", () => {
   assert.ok(done.includes("Perfect Hueycoatl"));
 });
 
+test("combat: live encounter suppresses engine regen", () => {
+  let reset = 0;
+  const fighter = { isNpc: () => true, getId: () => 14009, getAttribute: () => null, getCombat: () => ({ getLastAttack: () => ({ reset: () => { reset += 1; } }) }) };
+  const Combat2 = require("../plugins/bosses/hueycoatl/Combat.Hueycoatl");
+  const api = { core: { NpcIdentifiers: { THE_HUEYCOATL: 14009, HUEYCOATL_TAIL: 14014, HUEYCOATL_BODY: 14017 }, CombatMethod: class {}, CombatType: { MELEE: 0 } }, onNpcHitModify() {}, onCombatHitRoll(h) { api.roll = h; }, getPrayerHandler: () => ({}), registerNpcCombatMethodProvider() {} };
+  Combat2.attach(api);
+  api.roll({ attacker: fighter, target: {} });
+  assert.equal(reset, 1);
+});
+
 test("body: summit opens when all five segments are down", () => {
   const down = (hp) => ({ isRegistered: () => true, getHitpoints: () => hp });
   assert.equal(BodyPhase.allSegmentsDown({ segments: [down(0), down(0), down(0), down(0), down(0)] }), true);
