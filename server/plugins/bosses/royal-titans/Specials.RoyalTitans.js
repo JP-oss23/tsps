@@ -197,11 +197,22 @@ function startRow(npc, target) {
   });
 }
 
-/** op1 on a row tile: the hint message, no effect (captured). */
-function rowHint({ player, npc }) {
+/** Clicking Douse/Melt (or the wall's own loc) with the right element in hand clears the
+ * tile; anything else hints, as captured ("...strong enough to..."). */
+function tryRowClear(player, npc) {
   const id = npc?.getId?.();
   if (!Shared.isRowHitbox(id)) return false;
-  player?.sendMessage?.(id === Shared.FIRE_ROW_ID ? Shared.FIRE_HINT : Shared.ICE_HINT);
+  const row = npc.getAttribute?.(Shared.ATTR_ROW) ?? null;
+  const kind = row?.kind ?? (id === Shared.FIRE_ROW_ID ? "fire" : "ice");
+  const need = kind === "fire" ? "water" : "fire";
+  if (Minions.spellElementOf(player) === need) {
+    const session = sessionOf(npc) ?? require("./Area.RoyalTitans").sessionOfPlayer?.(player) ?? null;
+    if (session) {
+      clearRowTile(session, npc, true);
+      return true;
+    }
+  }
+  player?.sendMessage?.(kind === "fire" ? Shared.FIRE_HINT : Shared.ICE_HINT);
   return true;
 }
 
@@ -501,8 +512,20 @@ function interact(event) {
   if (event?.handled) return;
   const id = event?.npcId ?? event?.npc?.getId?.();
   if (!Shared.isRowHitbox(id) || event.clickType !== 1) return;
-  rowHint({ player: Shared.resolvePlayer(core, event?.player), npc: event.npc });
+  tryRowClear(Shared.resolvePlayer(core, event?.player), event.npc);
   event.handled = true;
+}
+
+/** The wall's visible loc (56001/56002): clicking it behaves like Douse/Melt on its tile. */
+function rowObjectClick(event) {
+  const id = event?.object?.getId?.() ?? event?.definition?.getId?.();
+  if (id !== Shared.FIRE_ROW_OBJECT && id !== Shared.ICE_ROW_OBJECT) return false;
+  const player = Shared.resolvePlayer(core, event?.player);
+  const at = event?.object?.getLocation?.();
+  const session = player ? require("./Area.RoyalTitans").sessionOfPlayer?.(player) ?? null : null;
+  const hitbox = at && session ? session.rows?.get?.(Shared.tileKey(at.getX(), at.getY())) ?? null : null;
+  if (hitbox) tryRowClear(player, hitbox);
+  return true;
 }
 
 /**
@@ -510,9 +533,16 @@ function interact(event) {
  * (Nightmare's Charge precedent) so casts route, and melee is refused with the hint.
  */
 function rowCanAttack(event) {
-  const { attacker, target } = event;
+  const { attacker, target, method } = event;
   if (!attacker?.isPlayer?.() || !target?.isNpc?.()) return;
   if (!Shared.isRowHitbox(target.getId?.())) return;
+  // Magic casts must reach Minions.rowClearingHit (that is what clears the tile);
+  // melee/ranged are refused with the hint.
+  let magic = false;
+  try {
+    magic = method?.getCombatType?.() === core.CombatType.MAGIC;
+  } catch (error) {}
+  if (magic) return;
   const kind = target.getId() === Shared.FIRE_ROW_ID ? "fire" : "ice";
   attacker.getAsPlayer().sendMessage(kind === "fire" ? Shared.FIRE_HINT : Shared.ICE_HINT);
   event.allow = false;
@@ -522,6 +552,7 @@ function attach(pluginApi) {
   api = pluginApi;
   core = pluginApi.core;
   pluginApi.onNpcInteraction(interact);
+  pluginApi.onObjectInteraction(rowObjectClick);
   pluginApi.onCanAttack(rowCanAttack);
   pluginApi.registerNpcCombatOption("Douse");
   pluginApi.registerNpcCombatOption("Melt");
@@ -538,7 +569,7 @@ function attach(pluginApi) {
 }
 
 module.exports = {
-  attach, tick, tickSession, tickRows, telegraphMelee, startRow, rowHint, clearRowTile,
+  attach, tick, tickSession, tickRows, telegraphMelee, startRow, tryRowClear, clearRowTile,
   startMinions, teleportTitans, survivorEnraged, takeBlastTurn, startBlast, blastPulse,
   blastSafeTile, maybeShout, endFight, addLoc, clearStaticLocs,
   _test: { blastSafeTile },

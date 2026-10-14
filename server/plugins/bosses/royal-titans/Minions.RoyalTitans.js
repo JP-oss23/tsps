@@ -377,13 +377,16 @@ function spellElement(spell) {
   return "other";
 }
 
+/** The element of the spell the player currently has in hand (or just cast), else "other". */
+function spellElementOf(player) {
+  const spell = selectedSpell(player) ?? recentSpell(player);
+  return spell ? spellElement(spell) : "other";
+}
+
 /** Row tiles clear to opposite-element spells (Yama-surge precedent: any tier works).
  * Anything else (or the wrong element) shows the hint message and does nothing. */
 function rowClearingHit(event) {
   const { npc, hit } = event;
-  try {
-    console.info(`[royal-diag] hitmodify id=${npc?.getId?.()} attacker=${hit?.getAttacker?.()?.isPlayer?.()}`);
-  } catch (error) {}
   if (!npc || !Shared.isRowHitbox(npc.getId?.())) return;
   const attacker = hit?.getAttacker?.();
   if (!attacker?.isPlayer?.()) return;
@@ -552,6 +555,6 @@ function attach(pluginApi) {
 
 module.exports = {
   attach, spawnTrio, tickSession, explodeTrio, elementalAccuracy, rowClearingHit,
-  minionDied, hitResolved, weaknessDamage, weaknessAccuracy,
+  minionDied, hitResolved, weaknessDamage, weaknessAccuracy, spellElementOf,
   _test: { spellTier, spellElement },
 };

@@ -660,6 +660,14 @@ export class ClientConnection {
               this.player.getPacketSender().sendRunStatus();
             } else if (packet.varpId === 301 && (packet.value !== 0) !== this.player.isSpecialActivated()) {
               CombatSpecial.activate(this.player);
+            } else if (packet.varpId === 1306 || packet.varpId === 1107) {
+              // NPC/player attack options are client-side varps; the client transmits them so
+              // the Settings plugin can persist and resend them at login (left-click attack).
+              const saved = this.player.getAttribute("settings:values");
+              this.player.setAttribute("settings:values", {
+                ...(saved && typeof saved === "object" ? saved : {}),
+                [`varp:${packet.varpId}`]: packet.value,
+              });
             }
             this.player.setAudioSetting(packet.varpId, packet.value);
           }

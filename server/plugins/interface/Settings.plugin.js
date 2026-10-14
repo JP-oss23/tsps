@@ -261,10 +261,19 @@ function chooseSettingOption(player, settingId, option) {
   return true;
 }
 
+/** Client-side combat option varps we mirror at login so left-click attack works out of
+ * the box: NPC attack options default to "left-click where available" (2), player attack
+ * options to "depends" (0). A value the client transmitted on a previous session wins. */
+const COMBAT_OPTION_DEFAULTS = new Map([[1306, 2], [1107, 0]]);
+
 /** Login: the client starts from zero, so send every setting the player changed. */
 function restoreSettings({ player }) {
-  for (const [key, value] of Object.entries(savedSettings(player))) {
+  const saved = savedSettings(player);
+  for (const [key, value] of Object.entries(saved)) {
     if (Number.isInteger(value)) setSettingVar(player, key, value);
+  }
+  for (const [varp, fallback] of COMBAT_OPTION_DEFAULTS) {
+    if (saved[`varp:${varp}`] === undefined) player.getPacketSender().sendConfig(varp, fallback);
   }
 }
 
