@@ -100,24 +100,23 @@ function startAuto(npc, target, style) {
   });
 }
 
-/** Glowing symbols on tiles near the target: standing players are struck after 4 ticks. */
+/** Glowing symbols: arena-wide fixed-pattern picks (captured: weak player anchoring,
+ * 3-spaced hot grid). Up to 8 tiles per cast inside the mapped bounds. */
 function startSymbols(npc, target) {
-  const pos = tileOf(target);
-  if (!pos) return;
-  const tiles = [];
-  for (let dx = -2; dx <= 2; dx++) {
-    for (let dy = -2; dy <= 2; dy++) {
-      const x = pos.x + dx;
-      const y = pos.y + dy;
-      if (x < Shared.SYMBOL_BOUNDS.x0 || x > Shared.SYMBOL_BOUNDS.x1) continue;
-      if (y < Shared.SYMBOL_BOUNDS.y0 || y > Shared.SYMBOL_BOUNDS.y1) continue;
-      tiles.push([x, y]);
-    }
+  const picked = [];
+  const seen = new Set();
+  let guard = 0;
+  while (picked.length < 8 && guard++ < 60) {
+    const x = Shared.SYMBOL_BOUNDS.x0 + Math.floor(Math.random() * (Shared.SYMBOL_BOUNDS.x1 - Shared.SYMBOL_BOUNDS.x0 + 1));
+    const y = Shared.SYMBOL_BOUNDS.y0 + Math.floor(Math.random() * (Shared.SYMBOL_BOUNDS.y1 - Shared.SYMBOL_BOUNDS.y0 + 1));
+    const key = `${x},${y}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    picked.push([x, y]);
   }
-  const picked = tiles.filter(() => Math.random() < 0.3).slice(0, 8);
   for (const [x, y] of picked) {
     try {
-      target.getPacketSender?.().sendGraphic?.(new core.Graphic(Shared.ANIMS.symbolTile), new core.Location(x, y, pos.z ?? 0));
+      target.getPacketSender?.().sendGraphic?.(new core.Graphic(Shared.ANIMS.symbolTile), new core.Location(x, y, 0));
     } catch (error) { /* headless */ }
   }
   later(Shared.SYMBOL_FORM_TICKS, target, () => {

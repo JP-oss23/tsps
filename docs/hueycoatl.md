@@ -372,6 +372,11 @@ Server with `AGENT_MCP=1`; tester account (`::mortal` toggles godmode — withou
 | Tail rolls no loot (overrides removeNpcs) | Pass (single pile observed) |
 | MVP Big bones gating | Unit-tested; live multi-player untested |
 | Braziers 30% buff in combat | Implemented, untested live (needs 3+ praying players) |
+| Stationary next to tail | Death in <30s (shockwaves + autos) — correct lethality |
+| Full P1 clear with real gear | 5/5 segments, HP untouched (passive correct), summit message |
+| Regen | Engine 10%/tick reproduced, suppressed while engaged; holds over idle minutes |
+| Summit on foot | Blocked in rev-241 cache (map-data issue, Assumption 11) |
+| Symbols | Placement fixed to arena-wide picks per capture audit (was player-centered) |
 | Private flag menu options | Captured verbatim; fee flow untested live |
 | Pillar charge stages vs prayers | Unit-tested; live multi-player untested |
 
