@@ -3,7 +3,9 @@
  "removeNpcs": {
   "6594": "Ent: its loot comes from the Ent trunk it leaves (Woodcutting Guild, plugins/skills/woodcutting).",
   "7234": "Ent: as above.",
-  "9474": "Ent: as above."
+  "9474": "Ent: as above.",
+  "14014": "Hueycoatl tail: rolls nothing; all loot comes from the head (docs/hueycoatl.md).",
+  "14015": "Hueycoatl tail (broken): as above."
  },
  "addNpcs": {
   "$comment": "NPC ids the dumper doesn't map to their table: variants and versions it misses (added 2026-09-15, 'import missing NPC tables with corrected variant mappings').",

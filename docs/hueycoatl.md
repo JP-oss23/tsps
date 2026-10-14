@@ -8,36 +8,36 @@ Giant draconic serpent coiled around the Darkfrost, Varlamore. Group boss (up to
 
 Every claim below carries one label:
 
-| Label | Meaning |
-| --- | --- |
-| [WIKI] | The OSRS Wiki (The Hueycoatl, The Hueycoatl/Strategies, Fire/Ice elemental pages, Fire/Icicles hazard pages; fetched Oct 2026). |
-| [LOG] | rsprox captures in osrs-captures (`hueycoatl.sqlite`, revs 226-237). Best fights: 234/03274, 235/03399, 235/03400, 237/04052, 237/04054 (head/tail/body actions). The other ~190 are lobby clicks, bank buffalo sessions and single mentions. Ticks are recording ticks. |
-| [EST] | Our reasoned assumption where neither source speaks. Each one says what would confirm it. |
-| [CACHE] | Verifiable from the game cache (`dump_ops.ts`, dump scripts, identifiers). Not yet run (no tsps cache on disk; `link-cache` pending). |
+| Label   | Meaning                                                                                                                                                                                                                                                                  |
+| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [WIKI]  | The OSRS Wiki (The Hueycoatl, The Hueycoatl/Strategies, Fire/Ice elemental pages, Fire/Icicles hazard pages; fetched Oct 2026).                                                                                                                                          |
+| [LOG]   | rsprox captures in osrs-captures (`hueycoatl.sqlite`, revs 226-237). Best fights: 234/03274, 235/03399, 235/03400, 237/04052, 237/04054 (head/tail/body actions). The other ~190 are lobby clicks, bank buffalo sessions and single mentions. Ticks are recording ticks. |
+| [EST]   | Our reasoned assumption where neither source speaks. Each one says what would confirm it.                                                                                                                                                                                |
+| [CACHE] | Verifiable from the game cache (`dump_ops.ts`, dump scripts, identifiers). Not yet run (no tsps cache on disk; `link-cache` pending).                                                                                                                                    |
 
 **World caveat [LOG]: every Hueycoatl fact sheet reports "Only recorded on Leagues, event or beta worlds."** All 17 recordings mentioning `huey_head`/`huey_body_part` carry special-world flags (many are 2025 Forestry/Grid-Master sessions that wander past the Darkfrost). Positions, anims, messages and sequencing transfer directly; treat exact damage numbers, XP and league-flavoured rows (ayak projectiles, league masteries, transmutation spotanims in the sheets) as suspect until confirmed on a live world.
 
 The plugin will be `server/plugins/bosses/Hueycoatl.plugin.js`, with one unit per part of
 the fight in `server/plugins/bosses/hueycoatl/`.
 
-| File | What it owns |
-| --- | --- |
-| `Shared.Hueycoatl.js` | Ids, tiles, captured anim/projectile/sound shapes, pure helpers. |
-| `Area.Hueycoatl.js` | Public chain + private flag entry, exit slide, bank buffalo proximity, base-camp NPCs (spawns + wander), logout/death handling, respawn knockback. |
-| `Combat.Hueycoatl.js` | Head autos (melee/magic/range), glowing symbols, Rain Fire prayer mapping. |
-| `BodyPhase.Hueycoatl.js` | Five passive segments, deaths, barrier break, summit opening. |
-| `Pillars.Hueycoatl.js` | Seer charge bar, pillar/prayer balance, brazier 30% buff. |
-| `TailPhase.Hueycoatl.js` | Shield, tail damage cap, side swaps, shockwaves. |
-| `Corpse.Hueycoatl.js` | Defeat, kill count, loot distribution, respawn. |
-| `Commands.Hueycoatl.js` | Developer commands for testing (proposal, see Testing). |
+| File                     | What it owns                                                                                                                                       |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Shared.Hueycoatl.js`    | Ids, tiles, captured anim/projectile/sound shapes, pure helpers.                                                                                   |
+| `Area.Hueycoatl.js`      | Public chain + private flag entry, exit slide, bank buffalo proximity, base-camp NPCs (spawns + wander), logout/death handling, respawn knockback. |
+| `Combat.Hueycoatl.js`    | Head autos (melee/magic/range), glowing symbols, Rain Fire prayer mapping.                                                                         |
+| `BodyPhase.Hueycoatl.js` | Five passive segments, deaths, barrier break, summit opening.                                                                                      |
+| `Pillars.Hueycoatl.js`   | Seer charge bar, pillar/prayer balance, brazier 30% buff.                                                                                          |
+| `TailPhase.Hueycoatl.js` | Shield, tail damage cap, side swaps, shockwaves.                                                                                                   |
+| `Corpse.Hueycoatl.js`    | Defeat, kill count, loot distribution, respawn.                                                                                                    |
+| `Commands.Hueycoatl.js`  | Developer commands for testing (proposal, see Testing).                                                                                            |
 
 Boss-HUD behaviour reuses the `BossHud` plugin events (`boss-hud:show/update/hide/reset`); no dedicated Hud unit (the HUD follows the head, standard `hp_hud_open` captured on attacks [LOG]).
 
 ## Stats [WIKI]
 
-| Part | NPC id | Combat | Size | HP | Max hit | Style |
-| --- | --- | --- | --- | --- | --- | --- |
-| Head (normal) | 14009 | 642 | 7 | 2500 | 14 | Melee/Magic/Ranged |
+| Part          | NPC id | Combat | Size | HP   | Max hit | Style              |
+| ------------- | ------ | ------ | ---- | ---- | ------- | ------------------ |
+| Head (normal) | 14009  | 642    | 7    | 2500 | 14      | Melee/Magic/Ranged |
 
   Id discrepancy [LOG vs WIKI]: the wiki infobox lists head versions as 14009, 14010, 14013, but logs show **14010 = `huey_head_respawn_placeholder`** (intermission marker) and **14013 was never observed** (0 /api/search hits, 0 samples in 196 recs). Treat 14009 as the only live head until the cache says otherwise.
 | Head (shielded) | 14011 | 642 | 7 | — (same pool) | — | — |
@@ -53,48 +53,57 @@ All three combat entries are missing from `server/data/definitions/monsters-comp
 ## Instance, entry, exit [LOG] [WIKI]
 
 - **Public + private** [WIKI]: climb the chain any time (up to 20 in the arena); private via meeting flag by the bank buffalo, 50k (25k with hard CA). Ironmen get drops in groups. Requirement: Children of the Sun + spoken to Taala at base camp. Below 85 combat / 43 Prayer shows a warning dialogue, still enterable [WIKI]. Recommended [WIKI, player-side, no wiring]: 60 Atk/Str/Def, 70 HP, 43 Prayer; Heart of Darkness for the Pendant of Ates.
+
 - **The chains** [LOG + WIKI]: `huey_fight_entrance` (55401) at **(1527, 3285)**, a few tiles north-west of the bank/flag cluster — the whole bank-to-boss trip is: bank buffalo → meeting flag (private) → a short walk → climb the chains. `op1` climbs through, `op3` peeks, `op2` triggers the Taala first-visit warning (option names [CACHE]).
+
 - **Entrance op1** [LOG 10 attempts/6 recs]:
-
-  | Tick | What happens |
-  | --- | --- |
-  | +2 | Teleport to **(1529, 3284, 0)** (×3) or (1528, 3284, 0) (×2); `huey_in_area` 0→1, `multiway_indicator` 0→1, music 801, `set_player_op 2` cleared |
+  
+  | Tick                  | What happens                                                                                                                                                   |
+  | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | +2                    | Teleport to **(1529, 3284, 0)** (×3) or (1528, 3284, 0) (×2); `huey_in_area` 0→1, `multiway_indicator` 0→1, music 801, `set_player_op 2` cleared               |
   | +0 (first visit only) | Taala dialogue ("Excuse me, human! Perhaps you shouldn't just go wandering through there…") plus music unlock "The Feathered Serpent" (`huey_encountered` 0→1) |
-
+  
   The full Taala tree is captured verbatim in the Taala dialogue section below (single sample — confirm option ids live).
+
 - **Entrance op3 = quick-peek** [LOG 1 attempt]: messagebox "There are # adventurers ascending the mountain. / The Hueycoatl has been subdued!" (5 seen). Peek states per wiki: preparing / phase 1 (body) / phase 2 (summit) / phase 3 (tail) / phase 4 (final stand) [WIKI].
+
 - **Exit shortcut op2** [LOG `huey_fight_exit_shortcut` 55234, 4 attempts/4 recs]:
-
-  | Tick | What happens |
-  | --- | --- |
+  
+  | Tick | What happens                                                                                                                                             |
+  | ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
   | +2.5 | `exactmove` (1520, 3290)→(1524, 3290) delay 100, `human_knockdown_loop_nodelay`, sound 7572 (loops 2); "You slide down the slope..."; `huey_in_area` 1→0 |
-  | +5.5 | Standing anim resumes, sound 2485, "... and land skillfully."; multiway 1→0, music 813 |
-
+  | +5.5 | Standing anim resumes, sound 2485, "... and land skillfully."; multiway 1→0, music 813                                                                   |
+  
   Resupply at the bank buffalo below [WIKI].
+
 - **Death** [WIKI]: grave at base camp (standard retrieval, not the arena). No Group-Ironman prestige rule was found on the wiki (unlike Royal Titans) — unchecked, see Assumption 14.
+
 - **Bank buffalo op1** [LOG 55199, 175 attempts/11 recs]: standard bankmain+bankside open. No boss wiring; document for the pre-fight loop only.
+
 - **Scoreboard [LOG]:** loc `huey_scoreboard` (55198) at (1533, 3287), op1 opens interface 884 as main modal with `title_text` ("The Hueycoatl - Statistics"), `pkc/pd/pbt_content` + `gkc/gd/gbt_content`, `close` — same shape as the Titans' 909 board. Values by KC/deaths/best plumbing (persist per player, mirror RoyalTitans scoreboard wiring).
+
 - **Private flag menu resolved [LOG `huey_holding_instance_creator` 55203 at (1525, 3295), 5 attempts/5 recs]:** op1 → chatmenu "Select an option": `Start a public/friends fight (based on privacy setting).|Start a solo fight.|Join a public/friends fight.|Cancel.` Instanced variants `huey_holding_entrance_instanced` (55205 at (1522, 3295)) and `huey_holding_instance_creator_instanced` (55204) swap in for private groups. First-visit flags: varbit `huey_intro` (11413) 0→1 alongside `huey_encountered` [LOG].
+
 - **Rewards varp [LOG, semantics open]:** `huey_rewards_int` (4446) 0→2560 seen — likely reward-points plumbing; read live before wiring (Assumption 9).
 
 ### Base-camp NPCs [LOG positions; roles/dialogue unsourced — Assumption 18]
 
 They do walk around you — ambient wandering in camp (1-tile steps captured), not an escort: every sample is at camp coords, none inside the arena.
 
-| Id | Gameval | Spawn tile [LOG] | Observed behaviour |
-| --- | --- | --- | --- |
-| 14000 | `huey_lobby_guard` | (1531, 3287) | Standing (samples only) |
-| 14102/14001 | `huey_lobby_guard_viero_multibase` / `_unknown` | (1523, 3293) | Standing |
-| 14007 | `huey_nelta` | (1526, 3291) | Wandering (south, west, north steps) |
-| 13996 | `huey_lobby_leader` | (1528, 3293) | Stationary, facing the player (`face_pathingentity`) |
-| 13997 | `huey_lobby_seer` | (1531, 3292) | Standing |
-| 14003/14004 | `huey_lobby_worker_1/2` | (1531, 3291) / (1528, 3290) | Wandering (north-east, north-west steps) |
-| 14008 | `huey_seer` (arena seer) | Spawns (1530, 3284), runs to (1527, 3276), also seen (1506, 3288) | Post = pillar side; full run + idle facing per Seer section |
-| 14018 | `huey_body_part_broken` | — | Broken segment state (samples only); transition timing unsourced |
-| 14010 | `huey_head_respawn_placeholder` | Head tile (1509, 3290), `awaken_reset` on add | Intermission marker; one sample shows add→del in 3 ticks (likely render-distance, not the full 30 s window — record a full idle respawn to place the live-set swap) [LOG 234/03274, single sample] |
-| 14101/13998 | `huey_lobby_chef_multibase` / `_unknown` | (1534, 3289), faces south | Kitchen staff; zero clicks/dialogue/shop links in 196 recs — role unsourced |
-| 14045 | `huey_pet` | Seen once as another player's follower at (3566, 3297), far from the Darkfrost | Follower behavior standard; drop wiring with loot tables |
-| — | `huey_victory_worker_1/2` | (1517–1519, 3281–3285), running | Post-kill crew (samples only); role unsourced |
+| Id          | Gameval                                         | Spawn tile [LOG]                                                               | Observed behaviour                                                                                                                                                                                 |
+| ----------- | ----------------------------------------------- | ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 14000       | `huey_lobby_guard`                              | (1531, 3287)                                                                   | Standing (samples only)                                                                                                                                                                            |
+| 14102/14001 | `huey_lobby_guard_viero_multibase` / `_unknown` | (1523, 3293)                                                                   | Standing                                                                                                                                                                                           |
+| 14007       | `huey_nelta`                                    | (1526, 3291)                                                                   | Wandering (south, west, north steps)                                                                                                                                                               |
+| 13996       | `huey_lobby_leader`                             | (1528, 3293)                                                                   | Stationary, facing the player (`face_pathingentity`)                                                                                                                                               |
+| 13997       | `huey_lobby_seer`                               | (1531, 3292)                                                                   | Standing                                                                                                                                                                                           |
+| 14003/14004 | `huey_lobby_worker_1/2`                         | (1531, 3291) / (1528, 3290)                                                    | Wandering (north-east, north-west steps)                                                                                                                                                           |
+| 14008       | `huey_seer` (arena seer)                        | Spawns (1530, 3284), runs to (1527, 3276), also seen (1506, 3288)              | Post = pillar side; full run + idle facing per Seer section                                                                                                                                        |
+| 14018       | `huey_body_part_broken`                         | —                                                                              | Broken segment state (samples only); transition timing unsourced                                                                                                                                   |
+| 14010       | `huey_head_respawn_placeholder`                 | Head tile (1509, 3290), `awaken_reset` on add                                  | Intermission marker; one sample shows add→del in 3 ticks (likely render-distance, not the full 30 s window — record a full idle respawn to place the live-set swap) [LOG 234/03274, single sample] |
+| 14101/13998 | `huey_lobby_chef_multibase` / `_unknown`        | (1534, 3289), faces south                                                      | Kitchen staff; zero clicks/dialogue/shop links in 196 recs — role unsourced                                                                                                                        |
+| 14045       | `huey_pet`                                      | Seen once as another player's follower at (3566, 3297), far from the Darkfrost | Follower behavior standard; drop wiring with loot tables                                                                                                                                           |
+| —           | `huey_victory_worker_1/2`                       | (1517–1519, 3281–3285), running                                                | Post-kill crew (samples only); role unsourced                                                                                                                                                      |
 
 ## Transport and ::teleports
 
@@ -104,15 +113,15 @@ Fastest live routes are existing content [WIKI]: Pendant of Ates teleport (after
 
 ## Options observed (op numbers [LOG], names [CACHE]/[WIKI])
 
-| NPC / loc | op1 | op2 | op3+ |
-| --- | --- | --- | --- |
-| Head/body/tail (14009/14017/14014) | ? [CACHE] | Attack (opnpc2 seen, all facts) | — |
-| Tail broken (14015) | **no recorded actions** [LOG: 8 recs mention it, 0 actions] — passive prop | — | — |
-| Shielded head (14011), defeated (14012) | ? [CACHE] (shielded: almost certainly no Attack; defeated: loot?) | — | — |
-| Entrance chains (55401) | Climb through (enter) | Taala warning, no teleport (1 sample, first visit) | op3 Peek |
-| Exit shortcut (55234) | ? [CACHE] | Slide down | — |
-| Bank buffalo (55199) | Bank | — | — |
-| Lobby (leader/workers/Nelta/seer) | Talk (assumed) [CACHE] | — | — |
+| NPC / loc                               | op1                                                                        | op2                                                | op3+     |
+| --------------------------------------- | -------------------------------------------------------------------------- | -------------------------------------------------- | -------- |
+| Head/body/tail (14009/14017/14014)      | ? [CACHE]                                                                  | Attack (opnpc2 seen, all facts)                    | —        |
+| Tail broken (14015)                     | **no recorded actions** [LOG: 8 recs mention it, 0 actions] — passive prop | —                                                  | —        |
+| Shielded head (14011), defeated (14012) | ? [CACHE] (shielded: almost certainly no Attack; defeated: loot?)          | —                                                  | —        |
+| Entrance chains (55401)                 | Climb through (enter)                                                      | Taala warning, no teleport (1 sample, first visit) | op3 Peek |
+| Exit shortcut (55234)                   | ? [CACHE]                                                                  | Slide down                                         | —        |
+| Bank buffalo (55199)                    | Bank                                                                       | —                                                  | —        |
+| Lobby (leader/workers/Nelta/seer)       | Talk (assumed) [CACHE]                                                     | —                                                  | —        |
 
 ## Boss HUD [LOG]
 
@@ -124,29 +133,29 @@ Recorded ids are rev 226-237 [LOG]. Server cache is newer; ids assumed stable �
 
 ### NPCs [LOG ids + gamevals; display/ops/size [CACHE]]
 
-| Id | Gameval | Role |
-| --- | --- | --- |
-| 14009 | `huey_head` | Head, normal (14010 = respawn placeholder, 14013 never observed — see Stats) |
-| 14011 | `huey_head_invulnerable` (transform) | Head, shielded (P3) |
-| 14012 | (defeated) | Head, defeated |
-| 14017 | `huey_body_part` | Body segment ×5 |
-| 14014 | `huey_tail` | Tail, normal |
-| 14015 | `huey_tail_broken` | Tail, broken (passive) |
-| 14008 | `huey_seer` | Seer (brazier charging) |
-| 13996/14003/14004/14007 | `huey_lobby_leader`, `huey_lobby_worker_1/2`, `huey_nelta` | Base-camp NPCs (full camp table above) |
+| Id                      | Gameval                                                    | Role                                                                         |
+| ----------------------- | ---------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| 14009                   | `huey_head`                                                | Head, normal (14010 = respawn placeholder, 14013 never observed — see Stats) |
+| 14011                   | `huey_head_invulnerable` (transform)                       | Head, shielded (P3)                                                          |
+| 14012                   | (defeated)                                                 | Head, defeated                                                               |
+| 14017                   | `huey_body_part`                                           | Body segment ×5                                                              |
+| 14014                   | `huey_tail`                                                | Tail, normal                                                                 |
+| 14015                   | `huey_tail_broken`                                         | Tail, broken (passive)                                                       |
+| 14008                   | `huey_seer`                                                | Seer (brazier charging)                                                      |
+| 13996/14003/14004/14007 | `huey_lobby_leader`, `huey_lobby_worker_1/2`, `huey_nelta` | Base-camp NPCs (full camp table above)                                       |
 
 Sizes [WIKI]: head 7, tail 5, body 1.
 
 ### Locs (objects) [LOG]
 
-| Gameval | Role |
-| --- | --- |
-| `huey_fight_entrance` (55401) | Chain entrance |
-| `huey_fight_exit_shortcut` (55234) | Slide back to camp |
-| `bank_buffalo` (55199) | Bank by the flag |
-| `huey_prayer_pillar_melee/magic/ranged_*` (`_empty`, `_s5`, `..._brazier_off`) | Pillars + braziers west of head |
-| `huey_attack_tiles_loc` | Symbol tiles (spawn ~+3 ticks after attacks) |
-| `df_cave_snow01_entrance03_huey` / `..._diag` | P2 barrier pieces (damage anim `huey_p2_barrier_damage_01`) |
+| Gameval                                                                        | Role                                                        |
+| ------------------------------------------------------------------------------ | ----------------------------------------------------------- |
+| `huey_fight_entrance` (55401)                                                  | Chain entrance                                              |
+| `huey_fight_exit_shortcut` (55234)                                             | Slide back to camp                                          |
+| `bank_buffalo` (55199)                                                         | Bank by the flag                                            |
+| `huey_prayer_pillar_melee/magic/ranged_*` (`_empty`, `_s5`, `..._brazier_off`) | Pillars + braziers west of head                             |
+| `huey_attack_tiles_loc`                                                        | Symbol tiles (spawn ~+3 ticks after attacks)                |
+| `df_cave_snow01_entrance03_huey` / `..._diag`                                  | P2 barrier pieces (damage anim `huey_p2_barrier_damage_01`) |
 
 Brazier lit locs, charge-stage locs and barrier locs all captured above with ids; only their cache-side names/ops remain [CACHE].
 
@@ -180,29 +189,33 @@ synth: 958 ×7495, 178 ×493, 2526 ×485, 2566 ×386, 2608 ×320, 4025 ×255 (su
 ## Attacks (all phases) [LOG] [WIKI]
 
 - **Head autos (+4 ticks after the attack action):** `huey_attack_melee/magic/range` with matching slot-0 spotanims and player-slot-2 impacts; area sounds 9594/9612; `npc hit` + headbar on the head. All three styles appear in the same windows (46/119 attempts show each [LOG]) — the head mixes styles freely.
+
 - **Glowing symbols:** `huey_attack_tiles_loc` (55209, shape 10) adds + `vfx_hueycoatl_prayer_02` (3001, delay 120) map anims on the same tiles at ~+3 ticks; lightning ≤16 after 4 ticks if stood on [WIKI; packet corroboration: the prayer_02 map anim carries delay=120 = 4 ticks at 30 cycles/tick, uniform over 640 samples [LOG]]. Mapped area [LOG, 4798 tiles over 196 recs]: **x 1505–1529, y 3270–3289, plane 0** (215 distinct tiles, median 13 hits each) — the whole mountainside-to-summit floor. **Caveat: observed envelope only, no interpolation** — tiles nobody stood near may simply never have triggered (symbols spawn "near players" [WIKI]), so absence proves nothing; unwalked corners and behind-barrier tiles are likely missing from the sample. That said, the evidence leans fixed-pattern over player-anchored: in 235/03399 the top symbol tiles all hit exactly 27× on a 3-spaced grid (1513/1516 × 3281/3284/3287) while the player camped elsewhere (1510,3283 ×109), and only 54/135 symbol tiles were ever stood on. Full analysis under Assumption 20.
+
 - **Rain Fire (implementation table):** one row per style; head anim ~+4 ticks after the attack action, player impact ~+2 ticks later (ranges — confirm live). Per-style damage split attempted and abandoned: a ±12-tick attribution window in these 20-player league logs catches hits up to 297 (relics/other sources), so no clean per-style maxima exist here — wiki's uniform ≤14 stands [WIKI; LOG inconclusive, leagues-inflated]. Pray the matching overhead or eat ≤14 (0–2 correct) [WIKI damage; LOG timing].
-
-  | Style | Colour tell [WIKI] | Head anim [LOG] | Slot-0 spotanim [LOG] | Projectile [LOG] | Player impact (slot 2) [LOG] |
-  | --- | --- | --- | --- | --- | --- |
-  | Melee | Red, smoking tail | `huey_attack_melee` | `vfx_huey_attack_melee_spotanim_01` | `vfx_huey_attack_melee_projanim_01` | `vfx_huey_attack_melee_impactanim_01` |
+  
+  | Style  | Colour tell [WIKI]          | Head anim [LOG]     | Slot-0 spotanim [LOG]                | Projectile [LOG]                     | Player impact (slot 2) [LOG]           |
+  | ------ | --------------------------- | ------------------- | ------------------------------------ | ------------------------------------ | -------------------------------------- |
+  | Melee  | Red, smoking tail           | `huey_attack_melee` | `vfx_huey_attack_melee_spotanim_01`  | `vfx_huey_attack_melee_projanim_01`  | `vfx_huey_attack_melee_impactanim_01`  |
   | Ranged | Green, no visible animation | `huey_attack_range` | `vfx_huey_attack_ranged_spotanim_01` | `vfx_huey_attack_ranged_projanim_01` | `vfx_huey_attack_ranged_impactanim_01` |
-  | Magic | Blue, spinning | `huey_attack_magic` | `vfx_huey_attack_magic_spotanim_01` | `vfx_huey_attack_magic_projanim_01` | `vfx_huey_attack_magic_impactanim_01` |
-
+  | Magic  | Blue, spinning              | `huey_attack_magic` | `vfx_huey_attack_magic_spotanim_01`  | `vfx_huey_attack_magic_projanim_01`  | `vfx_huey_attack_magic_impactanim_01`  |
+  
   Flight packets [LOG 235/03399, `projanim_specific_v4`, starttime=0]: endtime=150 typical (magic 20×, ranged 20×, melee 14×), endtime=210 rare (melee 3×, ranged 1×) — longer flight at longer range [EST from 4 samples]. Cycle→tick conversion unconfirmed (compare Royal Titans' per-tile delays before wiring) — Assumption 23.
-
+  
   Numeric ids are runtime-remapped per recording (e.g. ranged spotanim shows as 2971 live vs precache id) — hook by **name** (AGENTS.md rule 4); recorded cache ids: autos 11669/11670/11671, spotanims 11708/11716/11712, projanims 11709/11717/11713, impacts 11710/11718/11714 [LOG precache script1846, revs 226-237, no name-conflicts; full table: `huey-precache-ids.txt` in osrs-captures — verify against rev 241].
+
 - **Body segments:** passive, no attacks [LOG + WIKI]. Deaths play `huey_body_death(_diag)` with `loc_del` on the tile [LOG].
+
 - **P4:** same autos + symbols + feathers at sharply higher rate, plus tail shockwaves every ~15 s (below).
 
 ## Phases (encounter flow) [WIKI + LOG]
 
-| Phase | State | Live mechanics | Ends when |
-| --- | --- | --- | --- |
-| **P1 — body** | Tail blocks the summit; 5 segments (250 HP each) on the mountainside path, passive, no attacks [LOG + WIKI] | Symbols + feathers only (no autos — nothing to auto with); barrier takes damage anims as segments die | All five segments dead (`huey_body_death(_diag)` + `loc_del` each [LOG]) → barrier breaks, tail visibly clears the path (clearing anims unsourced — Assumption 17) |
-| **P2 — head + braziers** | Head attackable at the summit; pillars/seer active | Full kit: autos (melee/magic/range mixed [LOG]), symbols, feathers; pillars charge → braziers → 30% buff if balanced | Head at 50% HP → shield sequence (below) |
-| **P3 — shield + tail** | Head invulnerable (14011); tail (300 HP, capped) out of the western cave | Head keeps attacking (shielded autos captured [LOG]) but takes no damage; tail shockwaves every side swap (~20 s); symbols + feathers continue | Tail at 0 (`huey_tail_broken`, passive [LOG]) → unshield (feedback unsourced — Assumption 15) |
-| **P4 — final** | Head attackable again, no shield, no tail | Same kit at sharply higher rate + tail shockwaves periodic (~15 s) with far-side safespots | Head at 0 → defeated (14012) → loot (Assumptions 9/16) → 30 s respawn with summit knockback [WIKI] |
+| Phase                    | State                                                                                                       | Live mechanics                                                                                                                                 | Ends when                                                                                                                                                          |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **P1 — body**            | Tail blocks the summit; 5 segments (250 HP each) on the mountainside path, passive, no attacks [LOG + WIKI] | Symbols + feathers only (no autos — nothing to auto with); barrier takes damage anims as segments die                                          | All five segments dead (`huey_body_death(_diag)` + `loc_del` each [LOG]) → barrier breaks, tail visibly clears the path (clearing anims unsourced — Assumption 17) |
+| **P2 — head + braziers** | Head attackable at the summit; pillars/seer active                                                          | Full kit: autos (melee/magic/range mixed [LOG]), symbols, feathers; pillars charge → braziers → 30% buff if balanced                           | Head at 50% HP → shield sequence (below)                                                                                                                           |
+| **P3 — shield + tail**   | Head invulnerable (14011); tail (300 HP, capped) out of the western cave                                    | Head keeps attacking (shielded autos captured [LOG]) but takes no damage; tail shockwaves every side swap (~20 s); symbols + feathers continue | Tail at 0 (`huey_tail_broken`, passive [LOG]) → unshield (feedback unsourced — Assumption 15)                                                                      |
+| **P4 — final**           | Head attackable again, no shield, no tail                                                                   | Same kit at sharply higher rate + tail shockwaves periodic (~15 s) with far-side safespots                                                     | Head at 0 → defeated (14012) → loot (Assumptions 9/16) → 30 s respawn with summit knockback [WIKI]                                                                 |
 
 Seer cues track the flow: pillars lines in P2, "Go for the tail!" at the shield, "Watch out for its slam!" at shockwaves (table above). Late joiners (after P1) take a contribution cut [WIKI].
 
@@ -210,13 +223,13 @@ Seer cues track the flow: pillars lines in P2, "Go for the tail!" at the shield,
 
 The boss herself has no `[say]` rows in any fact sheet (unlike Royal Titans' teleport table) — but the **seer talks through the fight** [LOG, 235/03399 counts]:
 
-| Seer line | n | Moment |
-| --- | --- | --- |
-| "We need to charge all of the pillars using our prayers!" | 26 | Pillars phase |
-| "Keep praying to charge the pillars!" | 12 | Pillars phase |
-| "Go for the tail! It's a weakspot!" | 12 | Shield phase |
-| "Watch out for its slam!" | 9 | Tail shockwaves |
-| "Let's make this beastie move!" | 7 | Phase transitions |
+| Seer line                                                                                                                 | n         | Moment                  |
+| ------------------------------------------------------------------------------------------------------------------------- | --------- | ----------------------- |
+| "We need to charge all of the pillars using our prayers!"                                                                 | 26        | Pillars phase           |
+| "Keep praying to charge the pillars!"                                                                                     | 12        | Pillars phase           |
+| "Go for the tail! It's a weakspot!"                                                                                       | 12        | Shield phase            |
+| "Watch out for its slam!"                                                                                                 | 9         | Tail shockwaves         |
+| "Let's make this beastie move!"                                                                                           | 7         | Phase transitions       |
 | "Let's go!" / "Steady now!" / "Nicely done!" / "We did it! Well done!" / "Well done! Now, let's weaken it a little more!" | 5/4/4/4/4 | Transitions/clear calls |
 
 Assumed: seer lines are phase cues, no gameplay effect [EST — confirm live]. Taala tree captured (section above); leader/worker/Nelta lobby dialogue still unsourced (Assumption 12).
@@ -229,14 +242,14 @@ Assumed: seer lines are phase cues, no gameplay effect [EST — confirm live]. T
   - **Pillar tiles and loc chains (fixed, ids captured) [LOG]:** magic (1504, 3287): empty 55212 → s1–s5 55213–55217 → brazier_off 55211 → brazier_on 55210; ranged (1505, 3289): empty 55220 → s1–s5 55221–55225 → off 55219 → on 55218; melee (1507, 3290): empty 55228 → s1–s5 55229–55233 → off 55227 → on 55226. Charge stages s1–s5 appear live (78–106 sightings each; s5 ranged 1047 vs magic 513 vs melee 465 — prayer imbalance visible); during imbalance the melee pillar visibly flickers off↔empty every 2 ticks [LOG 235/03399 ticks 652–670], matching the drain/refill dynamic; `brazier_on` only 26× per pillar across 196 recs, i.e. these groups rarely lit the buff.
   - **Charge stages [LOG precache]:** `phase_empty` → `phase_1` → … → `phase_5` (6 visible levels, `pillar_zema01_prayer01_*`). Which stage maps to how many active prayers, and the seer check period in ticks, are unsourced — Assumption 5.
 
-| Team | Prayers per pillar |
-| --- | --- |
-| 1–5 | 1+ |
-| 6–8 | 2+ |
-| 9–11 | 3+ |
-| 12–14 | 4+ |
-| 15–17 | 5+ |
-| 18–20 | 6+ |
+| Team  | Prayers per pillar |
+| ----- | ------------------ |
+| 1–5   | 1+                 |
+| 6–8   | 2+                 |
+| 9–11  | 3+                 |
+| 12–14 | 4+                 |
+| 15–17 | 5+                 |
+| 18–20 | 6+                 |
 
 Team size counts everyone in the arena, idle or not (join/leave applies instantly — the alt-at-entrance exploit) [WIKI]. Exploit detail [WIKI]: alts parked near the entrance take only Rain Fire damage (never lightning or shockwaves), so gear them to tank the two styles they aren't praying. No pillar/brazier/seer/buff varp exists in the logs — the 30% buff must be tracked server-side from pillar states, not read from a varp [LOG absence over 196 recs]. Teams commonly call prayers in chat when running up, then camp overheads and tank feathers while the seer bar is near full (flick only when it isn't), since her chip damage is cheaper than losing the buff [WIKI].
 
@@ -307,20 +320,42 @@ Gate line (chain op2 / first visit): "Excuse me, human! Perhaps you shouldn't ju
 
 ## Examine texts [WIKI infoboxes]
 
-| NPC | Examine |
-| --- | --- |
-| Head | "It's like it's part of the mountain itself." |
-| Head (shielded) | "It's shielding itself." |
-| Head (defeated) | Same as head (infobox repeats it). |
-| Body | "There's a monster in this mountain..." |
-| Tail | "I'd best avoid that." |
-| Tail (broken) | "The sharp plating has been broken off." |
+| NPC             | Examine                                       |
+| --------------- | --------------------------------------------- |
+| Head            | "It's like it's part of the mountain itself." |
+| Head (shielded) | "It's shielding itself."                      |
+| Head (defeated) | Same as head (infobox repeats it).            |
+| Body            | "There's a monster in this mountain..."       |
+| Tail            | "I'd best avoid that."                        |
+| Tail (broken)   | "The sharp plating has been broken off."      |
 
 ## Testing [EST proposal, Yama/Araxxor pattern]
 
 Baselines [WIKI]: solo BiS ≈ 8:20 (tail-gated), trio ≈ 5 min.
 
-`server/tests/hueycoatl.test.cjs` covering segment deaths→barrier→summit, 50% shield→tail→unshield, shockwave dodges, brazier buff on/off, slide/peek/entry tiles against the captures. Commands: `::hueyhp <n>` (head HP; ≤50% arms shield), `::hueytail` (skip to P3), `::hueyshock` (force shockwave), `::hueybuff` (force braziers lit).
+`server/tests/hueycoatl.test.cjs` covering segment deaths→barrier→summit, 50% shield→tail→unshield, shockwave dodges, brazier buff on/off, slide/peek/entry tiles against the captures.
+
+## MCP verification (agent-tested, Oct 2026)
+
+Server with `AGENT_MCP=1`; tester account (`::mortal` toggles godmode — without it all damage voids, which cost an hour of debugging).
+
+| Check | Result |
+| --- | --- |
+| Chain Climb → (1528, 3284) + music unlock + 5 segments at exact tiles | Pass, matches captures |
+| Scoreboard → interface 884 | Pass |
+| Head autos damage the player (HP 99→66→death unprotected) | Pass |
+| `hueyhp 100` → shield message verbatim + 14009→14011 + east tail spawn | Pass |
+| Stationary player next to tail dies to shockwaves | Pass |
+| Tail break → head back to 14009 (P4) | Pass |
+| Kill → KC + duration/PB messages, single loot pile at head tile, engine CA fires | Pass |
+| Death drops land at base camp; respawn at Lumbridge | Pass |
+| Tail rolls no loot (overrides removeNpcs) | Pass (single pile observed) |
+| MVP Big bones gating | Unit-tested; live multi-player untested |
+| Braziers 30% buff in combat | Implemented, untested live (needs 3+ praying players) |
+| Private flag menu options | Captured verbatim; fee flow untested live |
+| Pillar charge stages vs prayers | Unit-tested; live multi-player untested |
+
+Manual checklist (for the human pass): fight P1 properly (barrier gating blocked a walk_to, needs a real clear), shockwave dodge timing feel, seer/pillar visuals, drop-table rates over many kills, duo + contribution, private instance isolation, GIM/ironman paths. Commands: `::hueyhp <n>` (head HP; ≤50% arms shield), `::hueytail` (skip to P3), `::hueyshock` (force shockwave), `::hueybuff` (force braziers lit).
 
 ## Assumptions (all [EST]; confirm in implementation via MCP)
 

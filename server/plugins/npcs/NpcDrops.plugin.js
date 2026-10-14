@@ -156,6 +156,10 @@ function applyWikiCorrections(tableById) {
   if (tableById.vorkath) {
     tableById.vorkath.rolls = 2;
   }
+  // Hueycoatl: uniques are a pre-roll replacing the main roll (Wiki, Drops).
+  for (const entry of tableById.the_hueycoatl?.entries || []) {
+    if (entry.section === "Unique") entry.pre_roll = true;
+  }
   correctMadAngel(tableById.mad_angel);
   const kalphiteQueen = tableById.kalphite_queen;
   if (!kalphiteQueen) {
