@@ -207,7 +207,9 @@ function rowHint({ player, npc }) {
 
 /**
  * A row tile cleared (by a qualifying spell hit, via Minions.clearRowTile, or expired):
- * despawn grid, vfx loc out, invisible marker in, NPC gone.
+ * despawn grid, its own vfx loc out, invisible marker in, NPC gone. Vfx is removed by
+ * object reference: rows on the same tiles must clear independently (a tile scan would
+ * strip a newer row's graphics with the older row's).
  */
 function clearRowTile(session, hitbox, cleared) {
   if (!session || !hitbox) return;
@@ -215,7 +217,14 @@ function clearRowTile(session, hitbox, cleared) {
   const kind = row?.kind ?? (hitbox.getId() === Shared.FIRE_ROW_ID ? "fire" : "ice");
   const at = tileOf(hitbox) ?? { x: row?.x ?? 0, y: row?.y ?? 0 };
   tileGraphic(session, at.x, at.y, Shared.ROW_DESPAWN_GFX[kind]);
-  removeRowVfx(session, at.x, at.y);
+  const rowVfx = row?.vfx ?? null;
+  if (rowVfx) {
+    try {
+      core.ObjectManager.deregister(rowVfx, true);
+    } catch (error) {}
+  } else {
+    removeRowVfx(session, at.x, at.y);
+  }
   const area = session.area;
   if (area?.isDestroyed?.() !== true) {
     addLoc(session, Shared.CLEARED_OBJECT, at.x, at.y, 10, 0);
@@ -326,7 +335,7 @@ function landTitan(session, npc, tile, spawnAnim, spawnGfx, floors) {
       addLoc(session, Shared.BLOCKING_OBJECT, tile[0] + dx, tile[1] + dy, 10, 0);
     }
   }
-  npc.getMovementCoordinator?.().setRadius?.(0);
+  npc.getMovementCoordinator?.().setRadius?.(30);
   npc.setAttribute?.(Shared.ATTR_BLAST_AT, core.World.getProcessCycle() + 8);
   CombatAchievements.teleported(session);
 }

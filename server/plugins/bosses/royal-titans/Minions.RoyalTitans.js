@@ -46,13 +46,46 @@ function tileOf(entity) {
   return at ? { x: at.getX(), y: at.getY() } : null;
 }
 
-/** Three elementals on the given tiles, with spawn anims and a shared fuse group. */
+const WALKABLE_MASK = 0x1280100;
+
+function isWalkable(x, y) {
+  try {
+    return (core.RegionManager.getClipping(x, y, 0, null) & WALKABLE_MASK) === 0;
+  } catch (error) {
+    return true;
+  }
+}
+
+/** Three elementals on walkable tiles near the caster (falling back around blocked
+ * ones, so a trio never spawns half-buried), with spawn anims and a shared fuse group. */
 function spawnTrio(session, minionId, tiles) {
   if (!session || session.area?.isDestroyed?.() === true) return;
   const kind = Shared.minionKind(minionId);
   const anims = Shared.MINION_ANIMATIONS[kind];
   const group = core.World.getProcessCycle();
-  tiles.forEach(([x, y], index) => {
+  const spots = [];
+  const seen = new Set();
+  const take = (x, y) => {
+    const key = `${x},${y}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    if (!isWalkable(x, y)) return false;
+    spots.push([x, y]);
+    return true;
+  };
+  for (const [x, y] of tiles) {
+    if (spots.length >= 3) break;
+    if (take(x, y)) continue;
+    for (let radius = 1; radius <= 4 && spots.length < 3; radius++) {
+      for (let dx = -radius; dx <= radius && spots.length < 3; dx++) {
+        for (let dy = -radius; dy <= radius && spots.length < 3; dy++) {
+          if (take(x + dx, y + dy)) break;
+        }
+      }
+    }
+  }
+  while (spots.length < 3 && tiles.length > 0) spots.push(tiles[spots.length % tiles.length]);
+  spots.forEach(([x, y], index) => {
     const minion = core.NPC.create(minionId, new core.Location(x, y, 0));
     minion.__skipDefaultRespawn = true;
     minion.setHitpoints?.(Shared.MINION_HITPOINTS);
@@ -123,7 +156,12 @@ function combatClass() {
 }
 
 function selectedSpell(player) {
-  return player?.getCombat?.()?.getSelectedSpell?.() ?? null;
+  try {
+    const combat = player?.getCombat?.();
+    return combat?.getSelectedSpell?.() ?? combat?.getPreviousCast?.() ?? null;
+  } catch (error) {
+    return null;
+  }
 }
 
 /** Spell families by identity (CombatSpell carries no name, only spellId). */
@@ -132,6 +170,8 @@ let ICE_SPELLS = new Set();
 let FIRE_SPELLS = new Set();
 let WAVE_PLUS_SPELLS = new Set();
 let WIND_STRIKE_SPELL = null;
+/** spellId -> { element, tier }: survives per-cast clones that break identity checks. */
+const SPELL_INFO = new Map();
 
 function buildSpellSets() {
   const Spells = core.CombatSpells ?? {};
@@ -141,6 +181,34 @@ function buildSpellSets() {
   FIRE_SPELLS = pick("FIRE_STRIKE", "FIRE_BOLT", "FIRE_BLAST", "FIRE_WAVE", "FIRE_SURGE");
   WAVE_PLUS_SPELLS = pick("WATER_WAVE", "WATER_SURGE", "FIRE_WAVE", "FIRE_SURGE", "ICE_BLITZ", "ICE_BARRAGE");
   WIND_STRIKE_SPELL = Spells.WIND_STRIKE ?? null;
+  SPELL_INFO.clear();
+  try {
+    for (const [name, member] of Object.entries(Spells)) {
+      const id = member?.spellId?.();
+      if (!Number.isInteger(id)) continue;
+      let element = null;
+      if (/^(WATER|ICE)_/.test(name)) element = "water";
+      else if (/^FIRE_/.test(name)) element = "fire";
+      if (!element) continue;
+      let tier = "other";
+      if (/_SURGE$/.test(name)) tier = "surge";
+      else if (/_WAVE$/.test(name)) tier = "wave";
+      else if (/_BLAST$/.test(name) || /_BLITZ$/.test(name)) tier = "blast";
+      else if (/_BOLT$/.test(name) || /_BURST$/.test(name)) tier = "bolt";
+      else if (/_STRIKE$/.test(name) || /_RUSH$/.test(name)) tier = "strike";
+      SPELL_INFO.set(id, { element, tier });
+    }
+  } catch (error) {}
+}
+
+function spellInfoOf(spell) {
+  if (spell == null) return null;
+  if (typeof spell === "string") return null;
+  try {
+    const id = spell.spellId?.();
+    if (Number.isInteger(id) && SPELL_INFO.has(id)) return SPELL_INFO.get(id);
+  } catch (error) {}
+  return null;
 }
 
 function spellNameOf(spell) {
@@ -193,17 +261,50 @@ function elementalAccuracy(roll) {
   if (!Shared.isMinion(target.getId?.())) return;
   const spell = selectedSpell(attacker);
   if (!spell) return;
-  if (WIND_STRIKE_SPELL && spell === WIND_STRIKE_SPELL) {
-    roll.forceAccurate = true;
-    return;
-  }
+  try {
+    const windId = WIND_STRIKE_SPELL?.spellId?.();
+    if (Number.isInteger(windId) && spell?.spellId?.() === windId) {
+      roll.forceAccurate = true;
+      return;
+    }
+  } catch (error) {}
   let chance = magicBonus(attacker) + Shared.ELEMENTAL_HIT_BONUS;
   if (wearingVoidMage(attacker)) chance *= 1.45;
   chance = Math.max(Shared.ELEMENTAL_HIT_MIN, Math.min(100, chance));
   if (Math.random() * 100 < chance) {
     roll.forceAccurate = true;
+    // Opposite-element hits on elementals land their max hit (Wiki: one Wave kill).
+    const kind = Shared.minionKind(target.getId());
+    const element = spellElement(spell);
+    if ((kind === "fire" && element === "water") || (kind === "ice" && element === "fire")) {
+      roll.forceMaxHit = true;
+    }
   } else {
     roll.__royalMiss = true;
+  }
+}
+
+/**
+ * Elemental weakness damage (Wiki): opposite-element spells deal double to elementals
+ * (100%) and +50% to titans (50%), rounded down like demonbane. Max-hit forcing for the
+ * one-shot Wave kills happens at roll time (elementalAccuracy).
+ */
+function weaknessDamage(entity, baseHit) {
+  try {
+    if (!entity?.isPlayer?.() || !Number.isFinite(baseHit)) return baseHit;
+    const target = entity.getCombat?.().getTarget?.();
+    const id = target?.isNpc?.() ? target.getId?.() : null;
+    if (id !== Shared.BRANDA_ID && id !== Shared.ELDRIC_ID
+      && id !== Shared.FIRE_MINION_ID && id !== Shared.ICE_MINION_ID) return baseHit;
+    const spell = selectedSpell(entity);
+    if (!spell) return baseHit;
+    const element = spellElement(spell);
+    const weakTo = id === Shared.BRANDA_ID || id === Shared.FIRE_MINION_ID ? "water" : "fire";
+    if (element !== weakTo) return baseHit;
+    if (id === Shared.FIRE_MINION_ID || id === Shared.ICE_MINION_ID) return baseHit * 2;
+    return baseHit + Math.floor(baseHit / 2);
+  } catch (error) {
+    return baseHit;
   }
 }
 
@@ -220,6 +321,8 @@ function recentSpell(attacker) {
 }
 
 function spellTier(spell) {
+  const info = spellInfoOf(spell);
+  if (info) return info.tier;
   const name = spellNameOf(spell);
   if (!name) return "other";
   if (WAVE_PLUS_SPELLS.has(spell)) return name.endsWith("_SURGE") ? "surge" : "wave";
@@ -233,6 +336,8 @@ function spellTier(spell) {
 
 function spellElement(spell) {
   if (!spell) return "other";
+  const info = spellInfoOf(spell);
+  if (info) return info.element;
   if (FIRE_SPELLS.has(spell)) return "fire";
   if (WATER_SPELLS.has(spell) || ICE_SPELLS.has(spell)) return "water";
   const name = spellNameOf(spell);
@@ -242,9 +347,13 @@ function spellElement(spell) {
   return "other";
 }
 
-/** Row tiles clear only to Wave-tier or stronger opposite-element spells (docs assumption 15). */
+/** Row tiles clear to opposite-element spells (Yama-surge precedent: any tier works).
+ * Anything else (or the wrong element) shows the hint message and does nothing. */
 function rowClearingHit(event) {
   const { npc, hit } = event;
+  try {
+    console.info(`[royal-diag] hitmodify id=${npc?.getId?.()} attacker=${hit?.getAttacker?.()?.isPlayer?.()}`);
+  } catch (error) {}
   if (!npc || !Shared.isRowHitbox(npc.getId?.())) return;
   const attacker = hit?.getAttacker?.();
   if (!attacker?.isPlayer?.()) return;
@@ -254,8 +363,7 @@ function rowClearingHit(event) {
   const element = spellElement(spell);
   const tier = spellTier(spell);
   const opposite = kind === "fire" ? element === "water" : element === "fire";
-  const strong = tier === "wave" || tier === "surge";
-  if (!opposite || !strong) {
+  if (!opposite) {
     for (const part of hit.getHits?.() ?? []) part.setDamage(0);
     hit.updateTotalDamage?.();
     if (hit.__royalHint !== true) {
@@ -402,6 +510,7 @@ function attach(pluginApi) {
   pluginApi.onNpcHitModify(rowHitLanded);
   pluginApi.onNpcDeath(minionDied);
   pluginApi.onCombatHitResolved(hitResolved);
+  pluginApi.registerMagicHitModifier(weaknessDamage);
   buildSpellSets();
   pluginApi.registerNpcCombatMethodProvider(
     [core.NpcIdentifiers.FIRE_ELEMENTAL_2, core.NpcIdentifiers.ICE_ELEMENTAL],
@@ -412,6 +521,6 @@ function attach(pluginApi) {
 
 module.exports = {
   attach, spawnTrio, tickSession, explodeTrio, elementalAccuracy, rowClearingHit,
-  minionDied, hitResolved,
+  minionDied, hitResolved, weaknessDamage,
   _test: { spellTier, spellElement },
 };

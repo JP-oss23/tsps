@@ -105,6 +105,7 @@ function titanDied(event) {
   npc.getCombat?.().reset?.();
   const corpseId = npc.getId() === Shared.BRANDA_ID ? Shared.BRANDA_CORPSE_ID : Shared.ELDRIC_CORPSE_ID;
   npc.setNpcTransformationId(corpseId);
+  npc.performAnimation(new core.Animation(npc.getId() === Shared.BRANDA_ID ? Shared.BRANDA_ANIMATIONS.inactive : Shared.ELDRIC_ANIMATIONS.inactive));
   npc.setHitpoints?.(1);
   if (npc === session.branda) session.brandaDown = true;
   else session.eldricDown = true;

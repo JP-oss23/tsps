@@ -38,8 +38,10 @@ Both titans share one stat block (NPC ids `12596` Branda, `14147` Eldric):
 
 - Combat 350, size 3x3, **600 HP**. The 35% teleport threshold is ~210 HP; the no-join rule is 25% damage = 450 HP remaining (changelog: lowered from 510 to 450).
 - Attack speed **7 ticks**, crush, aggressive. Max hit **26 melee**, **12 wall**.
-- Melee defence +12/+12/+0; magic +700 with a **50% elemental weakness** (Branda: water/ice, Eldric: fire — matches the captured melt/extinguish messages); ranged +700/+700/+700, but the player's **ranged accuracy is x6 while a titan is out of melee distance**, until it walks back; the boost also holds for the whole Elemental Blast charge and attack.
+- Melee defence +12/+12/+0; magic +700 with a **50% elemental weakness** (Branda: water/ice, Eldric: fire); implemented as +50% spell damage for the weak element (x2 + max-hit on elementals, so one Wave kills). Ranged +700/+700/+700, but the player's **ranged accuracy is x6 while a titan is out of melee distance**, until it walks back; the boost also holds for the whole Elemental Blast charge and attack.
 - Immune poison, venom, cannon, freeze. **Burn works.**
+- No block animation: hits never flinch them (captured; `block: -1` in `npc-combat-defs.json`, same as Yama/Doom/Araxxor). Minions neither.
+- No healing: HP never regenerates (wander radius + per-tick attack-timer suppression).
 - Slayer Fire/Ice Giants categories, 735 xp each. Respawn 30 ticks (18 s).
 
 Elementals (NPC ids `14150` fire, `14151` ice) [WIKI]: combat 37, size 1x1, **40 HP**, max **4** melee (slash fire / stab ice), speed **4 ticks**, aggressive, 100% elemental weakness (fire↔water spells, ice↔fire spells). Spell hit chance = magic accuracy bonus + 30 (min 30%); void mage set x1.45; Wind Strike always hits. One Fire/Water Wave kills (75 Magic for the water-wave max). Not immune to poison/venom/cannon/thralls.
@@ -209,7 +211,7 @@ Either titan casts either special. Told apart by anim + slot-2 spotanim (fire su
 
 - **Elemental row (`..._attack_summon01`: Branda 11976, Eldric 11977):**
   - Same tick: 5-wide `..._loc01_spawn01` vfx row (fire 3218, ice 3221) at x=2909-2913. **+4 ticks:** five hitbox NPCs on it: `rs_loc_attack_fire_hitbox` (14152) / `rs_loc_attack_ice_hitbox` (14153).
-  - **Clearing:** opposite element removes tiles early (fire row: water/ice spell; ice row: fire spell). Captured messages: "You'll need to use a water or ice spell that is strong enough to put out the fire." / "...a fire spell that is strong enough to melt the ice." / "You'll need to use a fire spell to melt the ice." Cleared tiles play `..._loc01_despawn01` (Branda 3220, Eldric 3223) and become `invisible_type8_nonblocking` (29733).
+  - **Clearing:** any opposite-element spell removes tiles early (fire row: water/ice spell; ice row: fire spell — Wave-tier gate dropped: captures only show the hint after physical clicks, and Yama's surges clear with any water spell). Cleared tiles play `..._loc01_despawn01` (Branda 3220, Eldric 3223) and become `invisible_type8_nonblocking` (29733); overlapping rows track their own graphics, so one row clearing never strips another's.
   - **Lifetime ~40 ticks** if left alone (captured lives 34-40); spell-cleared rows die in 2-10. Walking/standing on a live tile deals the wall hit (max 12 [WIKI]; 10/12 player-hits in 02283 [LOG]).
   - **Sounds:** fire 10116 + 10118 (delay 122); ice 10146/10147 (delay 5) + 10148 (delay 120), range 1 per tile.
 - **Summon elementals (`..._attack_summon02`: Branda 11978, Eldric 11977):**
@@ -310,7 +312,7 @@ Still needing eyes/alive checks: boss-HUD bar rendering (values verified, never 
 12. **Duo scaling.** No duo captures exist: assume titan HP/damage do NOT scale with party size (wiki never mentions scaling; only loot contribution scales). Confirm live.
 13. **Melee shape.** Telegraph is the captured 5x3 player-centred block, delays +2/tile from the caster [LOG]; damage assumed on the same tiles as delays expire (wiki 3x5 agrees on shape). Confirm per-tile damage timing live.
 14. **Teleport landing.** (2950, 9574): verified walkable and connected live (exit lands there; walked to entrance/scoreboard). Resolved.
-15. **Row-clear spell gate.** Only Wave-tier and Surge casts of the opposite element were seen clearing tiles; weaker casts were never attempted. Assumed: clearing needs Wave or stronger (Wave/Surge); anything weaker (or the wrong element, or melee — op1) gives the hint message instead. Confirm live with Blast/Bolt/Strike.
+15. **Row-clear spell gate.** Dropped: any opposite-element spell clears (the captures show the hint only after physical clicks; Yama precedent). Resolved.
 16. **Duo join flow.** Verified live repeatedly: same-entrance Join drops the partner into the live instance. Resolved; scaling per Assumption 12.
 17. **Unclaimed-corpses schedule.** All corpse timings are claim-anchored (see Death section); a player who never clicks is unwitnessed. Assumed: same offsets from kill+19. Confirm live (or that nothing stalls).
 18. **Respawn while looting.** Fresh spawns arrive ~31-34 ticks after the claim even if the player is still in the arena — assumed they do not aggro/interfere until attacked (no capture shows the overlap). Confirm live.

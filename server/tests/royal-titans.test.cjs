@@ -135,8 +135,18 @@ test("row clearing: water surge clears a fire tile", () => {
   assert.deepEqual(attacker.messages, []);
 });
 
-test("row clearing: weak or wrong spells hint and deal nothing", () => {
-  for (const spell of ["WATER_STRIKE", "FIRE_SURGE", null]) {
+test("row clearing: any opposite-element spell clears, wrong element hints", () => {
+  for (const spell of ["WATER_SURGE", "WATER_STRIKE", "ICE_BARRAGE"]) {
+    const npc = fakeRowNpc(14152, 2911, 9566);
+    const attacker = fakeCaster(spell);
+    attacker.sendMessage = function (text) { this.messages.push(text); };
+    const hit = fakeSpellHit(attacker);
+    Minions.rowClearingHit({ npc, hit });
+    assert.equal(hit.__royalClear, true, spell);
+    assert.equal(hit.getHits()[0].getDamage(), 1);
+    assert.deepEqual(attacker.messages, []);
+  }
+  for (const spell of ["FIRE_SURGE", "WIND_STRIKE", null]) {
     const npc = fakeRowNpc(14152, 2911, 9566);
     const attacker = fakeCaster(spell);
     attacker.sendMessage = function (text) { this.messages.push(text); };
@@ -155,6 +165,23 @@ test("row clearing: fire surge clears an ice tile", () => {
   const hit = fakeSpellHit(attacker);
   Minions.rowClearingHit({ npc, hit });
   assert.equal(hit.__royalClear, true);
+});
+
+function fakeDuelist(spell, targetId) {
+  const target = { isNpc: () => true, getId: () => targetId };
+  return {
+    isPlayer: () => true,
+    getCombat: () => ({ getSelectedSpell: () => spell, getTarget: () => target }),
+  };
+}
+
+test("weakness damage: double on elementals, +50% on titans, else untouched", () => {
+  assert.equal(Minions.weaknessDamage(fakeDuelist("WATER_WAVE", 14150), 20), 40);
+  assert.equal(Minions.weaknessDamage(fakeDuelist("FIRE_WAVE", 14151), 20), 40);
+  assert.equal(Minions.weaknessDamage(fakeDuelist("WATER_WAVE", 12596), 20), 30);
+  assert.equal(Minions.weaknessDamage(fakeDuelist("FIRE_WAVE", 14147), 21), 31);
+  assert.equal(Minions.weaknessDamage(fakeDuelist("FIRE_WAVE", 14150), 20), 20);
+  assert.equal(Minions.weaknessDamage(fakeDuelist("WATER_WAVE", 2085), 20), 20);
 });
 
 test("contribution shares are whole percents of combined damage", () => {
