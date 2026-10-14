@@ -258,7 +258,17 @@ function elementalAccuracy(roll) {
     } catch (error) {}
   }
   if (!target?.isNpc?.()) return;
-  if (!Shared.isMinion(target.getId?.())) return;
+  const targetId = target.getId?.();
+  // Row tiles have no real defences (cache level -1): the right element always lands
+  // so surges reliably extinguish/melt instead of splashing silently.
+  if (Shared.isRowHitbox(targetId)) {
+    const spell = selectedSpell(attacker);
+    const element = spell ? spellElement(spell) : null;
+    const need = targetId === Shared.FIRE_ROW_ID ? "water" : "fire";
+    if (element === need) roll.forceAccurate = true;
+    return;
+  }
+  if (!Shared.isMinion(targetId)) return;
   const spell = selectedSpell(attacker);
   if (!spell) return;
   try {
@@ -305,6 +315,26 @@ function weaknessDamage(entity, baseHit) {
     return baseHit + Math.floor(baseHit / 2);
   } catch (error) {
     return baseHit;
+  }
+}
+
+/**
+ * Elemental weakness accuracy (Wiki): opposite-element spells roll +50% accuracy
+ * against the titans, so maxed mages stop splashing every other cast.
+ */
+function weaknessAccuracy(entity, roll) {
+  try {
+    if (!entity?.isPlayer?.() || !Number.isFinite(roll)) return roll;
+    const target = entity.getCombat?.().getTarget?.();
+    const id = target?.isNpc?.() ? target.getId?.() : null;
+    if (id !== Shared.BRANDA_ID && id !== Shared.ELDRIC_ID) return roll;
+    const spell = selectedSpell(entity);
+    if (!spell) return roll;
+    const weakTo = id === Shared.BRANDA_ID ? "water" : "fire";
+    if (spellElement(spell) !== weakTo) return roll;
+    return roll + Math.floor(roll / 2);
+  } catch (error) {
+    return roll;
   }
 }
 
@@ -511,6 +541,7 @@ function attach(pluginApi) {
   pluginApi.onNpcDeath(minionDied);
   pluginApi.onCombatHitResolved(hitResolved);
   pluginApi.registerMagicHitModifier(weaknessDamage);
+  pluginApi.registerMagicAttackAccuracyModifier(weaknessAccuracy);
   buildSpellSets();
   pluginApi.registerNpcCombatMethodProvider(
     [core.NpcIdentifiers.FIRE_ELEMENTAL_2, core.NpcIdentifiers.ICE_ELEMENTAL],
@@ -521,6 +552,6 @@ function attach(pluginApi) {
 
 module.exports = {
   attach, spawnTrio, tickSession, explodeTrio, elementalAccuracy, rowClearingHit,
-  minionDied, hitResolved, weaknessDamage,
+  minionDied, hitResolved, weaknessDamage, weaknessAccuracy,
   _test: { spellTier, spellElement },
 };

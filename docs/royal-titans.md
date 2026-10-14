@@ -38,7 +38,7 @@ Both titans share one stat block (NPC ids `12596` Branda, `14147` Eldric):
 
 - Combat 350, size 3x3, **600 HP**. The 35% teleport threshold is ~210 HP; the no-join rule is 25% damage = 450 HP remaining (changelog: lowered from 510 to 450).
 - Attack speed **7 ticks**, crush, aggressive. Max hit **26 melee**, **12 wall**.
-- Melee defence +12/+12/+0; magic +700 with a **50% elemental weakness** (Branda: water/ice, Eldric: fire); implemented as +50% spell damage for the weak element (x2 + max-hit on elementals, so one Wave kills). Ranged +700/+700/+700, but the player's **ranged accuracy is x6 while a titan is out of melee distance**, until it walks back; the boost also holds for the whole Elemental Blast charge and attack.
+- Melee defence +12/+12/+0; magic +700 with a **50% elemental weakness** (Branda: water/ice, Eldric: fire); implemented as +50% spell damage for the weak element (x2 + max-hit on elementals, so one Wave kills) **and +50% magic accuracy on the titans** (maxed mages were splashing every other cast without it). Ranged +700/+700/+700, but the player's **ranged accuracy is x6 while a titan is out of melee distance**, until it walks back; the boost also holds for the whole Elemental Blast charge and attack.
 - Immune poison, venom, cannon, freeze. **Burn works.**
 - No block animation: hits never flinch them (captured; `block: -1` in `npc-combat-defs.json`, same as Yama/Doom/Araxxor). Minions neither.
 - No healing: HP never regenerates (wander radius + per-tick attack-timer suppression).
@@ -54,7 +54,7 @@ All four combat NPCs already have matching entries in `server/data/definitions/m
 - **Getting there** [WIKI]: western Asgarnian Ice Dungeon (fairy ring `AIQ`); giantsoul amulet teleports outside the entrance tunnel.
 - **Entrance** [LOG]: loc `royal_titans_entrance` (55986) at (2948, 9573).
   - op1: chatmenu "Select an option": `Start a fight (Your friends will be able to join you).|Join a fight.|Do nothing.` (runclientscript 58).
-  - op2: **Quick-start** [LOG + WIKI changelog]: skips straight to the warning box.
+  - op2: **Quick-start** [LOG + WIKI changelog]: skips straight to the warning box and always starts your own fresh fight (never a stranger's; Enter > Join a fight is the duo path).
   - Choosing either shows messagebox 229: "You are about to begin an encounter with the Royal Titans. Dying during this encounter will not be considered a safe death. To leave, you'll need to use <col=ff0000>'Quick-escape'</col> via the tunnel" and sets varbit `royal_titans_enter_warning` (16089) [LOG].
   - Refused with messagebox "The fight with the Royal Titans is in a critical stage. You'll have to wait until the next fight begins." when a fight is past the join point (see Assumptions).
 - **Arena landing** [LOG]: (2911, 9573), north edge. Entry plays the fade overlay in, `minimap_state` (6719) 2→0, music "In the Pits" (midi 469). Leaving reverses it: fade, boss HUD cleared (hide + container empty), minimap 0→2.
@@ -212,7 +212,7 @@ Either titan casts either special. Told apart by anim + slot-2 spotanim (fire su
 - **Elemental row (`..._attack_summon01`: Branda 11976, Eldric 11977):**
   - Same tick: 5-wide `..._loc01_spawn01` vfx row (fire 3218, ice 3221) at x=2909-2913. **+4 ticks:** five hitbox NPCs on it: `rs_loc_attack_fire_hitbox` (14152) / `rs_loc_attack_ice_hitbox` (14153).
   - **Clearing:** any opposite-element spell removes tiles early (fire row: water/ice spell; ice row: fire spell — Wave-tier gate dropped: captures only show the hint after physical clicks, and Yama's surges clear with any water spell). Cleared tiles play `..._loc01_despawn01` (Branda 3220, Eldric 3223) and become `invisible_type8_nonblocking` (29733); overlapping rows track their own graphics, so one row clearing never strips another's.
-  - **Lifetime ~40 ticks** if left alone (captured lives 34-40); spell-cleared rows die in 2-10. Walking/standing on a live tile deals the wall hit (max 12 [WIKI]; 10/12 player-hits in 02283 [LOG]).
+  - **Lifetime ~40 ticks** if left alone (captured lives 34-40); spell-cleared rows die in 2-10. Walking/standing on a live tile deals the wall hit (max 12 [WIKI]; 10/12 player-hits in 02283 [LOG]); rows never vanish under your feet and don't physically block (OSRS NPCs are walk-through). Contact damage pulses about every 3 ticks — rate estimated [EST], Wiki gives no interval.
   - **Sounds:** fire 10116 + 10118 (delay 122); ice 10146/10147 (delay 5) + 10148 (delay 120), range 1 per tile.
 - **Summon elementals (`..._attack_summon02`: Branda 11978, Eldric 11977):**
   - **+2 ticks:** three `rt_summon_elemental_fire` (14150) / `rt_summon_elemental_ice` (14151) on adjacent tiles near the caster (e.g. (2912, 9563-9565), (2913, 9568-9570)) with `..._spawn01` (fire 11956, ice 11954) + spawn spotanim (ice 3202).

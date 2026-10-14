@@ -184,6 +184,26 @@ test("weakness damage: double on elementals, +50% on titans, else untouched", ()
   assert.equal(Minions.weaknessDamage(fakeDuelist("WATER_WAVE", 2085), 20), 20);
 });
 
+test("weakness accuracy: +50% for the weak element on titans only", () => {
+  assert.equal(Minions.weaknessAccuracy(fakeDuelist("WATER_SURGE", 12596), 100), 150);
+  assert.equal(Minions.weaknessAccuracy(fakeDuelist("FIRE_SURGE", 14147), 100), 150);
+  assert.equal(Minions.weaknessAccuracy(fakeDuelist("FIRE_SURGE", 12596), 100), 100);
+  assert.equal(Minions.weaknessAccuracy(fakeDuelist("WATER_SURGE", 14150), 100), 100);
+  assert.equal(Minions.weaknessAccuracy(fakeDuelist("WATER_SURGE", 2085), 100), 100);
+});
+
+test("row accuracy: the right element always lands on row tiles", () => {
+  for (const [spell, row, lands] of [
+    ["WATER_SURGE", 14152, true], ["WATER_STRIKE", 14152, true],
+    ["FIRE_SURGE", 14153, true], ["FIRE_SURGE", 14152, false],
+    ["WATER_SURGE", 14153, false],
+  ]) {
+    const roll = { attacker: fakeCaster(spell), target: { isNpc: () => true, getId: () => row } };
+    Minions.elementalAccuracy(roll);
+    assert.equal(roll.forceAccurate === true, lands, `${spell} on ${row}`);
+  }
+});
+
 test("contribution shares are whole percents of combined damage", () => {
   const me = fakePlayer();
   me.getUsername = () => "me";

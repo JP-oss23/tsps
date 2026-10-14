@@ -397,6 +397,8 @@ function moveInto(session, player) {
 function findJoinable() {
   for (const session of sessions.values()) {
     if (session.area?.isDestroyed?.() === true) continue;
+    // Never join a zombie: at least one member must still be online in the fight.
+    if (!session.players.some((member) => member?.isRegistered?.())) continue;
     if (!session.branda && !session.eldric) return session;
     const fresh = [session.branda, session.eldric].every((npc) =>
       alive(npc)
@@ -463,11 +465,11 @@ function entranceMenu({ player }) {
   return true;
 }
 
-/** Quick-start skips the menu but never the warning. */
+/** Quick-start skips the menu but never the warning; it always starts your own
+ * fresh fight, never a stranger's (Join a fight is the explicit duo path). */
 function quickStart({ player }) {
-  const joinable = findJoinable();
   leave(player, null);
-  warnAndEnter(player, joinable ?? createSession(player));
+  warnAndEnter(player, createSession(player));
   return true;
 }
 

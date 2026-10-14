@@ -248,6 +248,9 @@ function expireRows(session) {
 
 /** Standing on a live row tile deals the wall hit (Wiki max 12). */
 function tickRows(session) {
+  // Contact damage pulses about every 3 ticks (rate estimated [EST]): every tick felt
+  // like a shredder and the Wiki only gives the 1-12 max, not the interval.
+  if (core.World.getProcessCycle() % 3 === 0) {
   for (const player of session.players) {
     if (!alive(player)) continue;
     const pos = tileOf(player);
@@ -257,6 +260,7 @@ function tickRows(session) {
     const damage = 1 + core.Misc.getRandom(Shared.WALL_MAX - 1);
     player.getCombat().getHitQueue().addPendingDamage([new core.HitDamage(damage, core.HitMask.RED)]);
     CombatAchievements.avoidableDamage(player, damage, "row");
+  }
   }
   expireRows(session);
 }
