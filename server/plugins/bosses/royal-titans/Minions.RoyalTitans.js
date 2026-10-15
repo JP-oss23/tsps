@@ -48,9 +48,10 @@ function tileOf(entity) {
 
 const WALKABLE_MASK = 0x1280100;
 
-function isWalkable(x, y) {
+/** Walkable in the fight's own instance (its collision, not the main world's). */
+function isWalkable(session, x, y) {
   try {
-    return (core.RegionManager.getClipping(x, y, 0, null) & WALKABLE_MASK) === 0;
+    return (core.RegionManager.getClipping(x, y, 0, session?.area ?? null) & WALKABLE_MASK) === 0;
   } catch (error) {
     return true;
   }
@@ -69,7 +70,7 @@ function spawnTrio(session, minionId, tiles) {
     const key = `${x},${y}`;
     if (seen.has(key)) return false;
     seen.add(key);
-    if (!isWalkable(x, y)) return false;
+    if (!isWalkable(session, x, y)) return false;
     spots.push([x, y]);
     return true;
   };
@@ -394,7 +395,6 @@ function rowClearingHit(event) {
   const kind = npc.getId() === Shared.FIRE_ROW_ID ? "fire" : "ice";
   const spell = selectedSpell(attacker) ?? recentSpell(attacker);
   const element = spellElement(spell);
-  const tier = spellTier(spell);
   const opposite = kind === "fire" ? element === "water" : element === "fire";
   if (!opposite) {
     for (const part of hit.getHits?.() ?? []) part.setDamage(0);

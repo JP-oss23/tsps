@@ -17,7 +17,6 @@ const Shared = require("./Shared.RoyalTitans");
 const Hud = require("./Hud.RoyalTitans");
 const CombatAchievements = require("./CombatAchievements.RoyalTitans");
 
-const ARENA = Object.freeze({ minX: 2896, maxX: 2927, minY: 9552, maxY: 9583 });
 const SCOREBOARD_INTERFACE = 909;
 const SCOREBOARD_COMPONENT = Object.freeze({
   title: 6, close: 2, pkc: 9, pd: 11, pbt: 13, gkc: 15, gd: 17, gbt: 19,
@@ -84,13 +83,21 @@ function nameOf(player) {
   }
 }
 
+/** An authored arena spot as a real (instance) Location. */
+function arenaLocation(area, x, y, z = 0) {
+  const at = Shared.instanceTile(area, x, y, z);
+  return new core.Location(at.x, at.y, at.z);
+}
+
 function insideArenaBounds(player) {
   try {
     const at = player?.getLocation?.();
-    if (!at || (at.getZ?.() ?? 0) !== 0) return false;
-    const x = at.getX();
-    const y = at.getY();
-    return x >= ARENA.minX && x <= ARENA.maxX && y >= ARENA.minY && y <= ARENA.maxY;
+    if (!at) return false;
+    for (const session of sessions.values()) {
+      if (session.area?.isDestroyed?.() === true) continue;
+      if (session.area?.contains?.(at) === true) return true;
+    }
+    return false;
   } catch (error) {
     return false;
   }
@@ -112,10 +119,22 @@ function sessionOfNpc(npc) {
 }
 
 function defineAreaClass() {
-  class RoyalTitansArea extends core.PrivateArea {
+  class RoyalTitansArea extends core.TemplatedInstanceArea {
     constructor(ownerName) {
-      super([new core.Boundary(ARENA.minX, ARENA.maxX, ARENA.minY, ARENA.maxY, 0)]);
+      super(Shared.ARENA_CHUNKS, Shared.ARENA_CHUNKS);
       this.ownerName = ownerName ?? "unknown";
+      const { x, y } = Shared.ARENA_SOURCE_CHUNK;
+      for (let chunkX = 0; chunkX < Shared.ARENA_CHUNKS; chunkX++) {
+        for (let chunkY = 0; chunkY < Shared.ARENA_CHUNKS; chunkY++) {
+          this.setChunk(0, chunkX, chunkY, {
+            sourceChunkX: x + chunkX, sourceChunkY: y + chunkY, sourcePlane: 0, rotation: 0,
+          });
+        }
+      }
+    }
+
+    getName() {
+      return "Royal Titans Arena";
     }
 
     destroy() {
@@ -193,7 +212,9 @@ function retarget(session) {
 
 function spawnTitan(session, id, tile, faceTile, anim) {
   const area = session.area;
-  const npc = core.NPC.create(id, new core.Location(tile[0], tile[1], tile[2]));
+  const at = Shared.instanceTile(area, tile[0], tile[1], tile[2]);
+  const face = Shared.instanceTile(area, faceTile[0], faceTile[1], 0);
+  const npc = core.NPC.create(id, new core.Location(at.x, at.y, at.z));
   npc.__skipDefaultRespawn = true;
   npc.setHitpoints?.(Shared.MAX_HITPOINTS);
   npc.getMovementCoordinator?.().setRadius?.(30);
@@ -202,7 +223,7 @@ function spawnTitan(session, id, tile, faceTile, anim) {
   npc.setFlag?.("combat:close-in");
   npc.setMultiCombat?.(true);
   npc.performAnimation(new core.Animation(anim));
-  npc.setPositionToFace?.(new core.Location(faceTile[0], faceTile[1], 0));
+  npc.setPositionToFace?.(new core.Location(face.x, face.y, 0));
   npc.setAttribute?.(Shared.ATTR_ENCOUNTER, session);
   npc.setAttribute?.(Shared.ATTR_ARMED_AT, core.World.getProcessCycle() + Shared.ARM_TICKS);
   npc.setAttribute?.(Shared.ATTR_ATTACKS, 0);
@@ -323,7 +344,7 @@ function recoverOnLogin({ player }) {
     if (session.area?.isDestroyed?.() === true) continue;
     const member = session.players.map(nameOf).filter(Boolean).map((name) => name.toLowerCase());
     if (member.includes(String(owner ?? "").toLowerCase()) || member.includes(String(nameOf(player) ?? "").toLowerCase())) {
-      player.moveTo(new core.Location(Shared.ARENA_ENTRY[0], Shared.ARENA_ENTRY[1], Shared.ARENA_ENTRY[2]));
+      player.moveTo(arenaLocation(session.area, Shared.ARENA_ENTRY[0], Shared.ARENA_ENTRY[1], Shared.ARENA_ENTRY[2]));
       CombatAchievements.joined(player, session);
       Hud.showFor(player, session);
       return;
@@ -384,7 +405,7 @@ function moveInto(session, player) {
   player.setAttribute?.(Shared.ATTR_STREAK, 0);
   player.setAttribute?.(Shared.ATTR_STREAK_FAILED, null);
   area.enter(player);
-  player.moveTo(new core.Location(Shared.ARENA_ENTRY[0], Shared.ARENA_ENTRY[1], Shared.ARENA_ENTRY[2]));
+  player.moveTo(arenaLocation(area, Shared.ARENA_ENTRY[0], Shared.ARENA_ENTRY[1], Shared.ARENA_ENTRY[2]));
   fade(player, true);
   fade(player, false);
   player.getPacketSender?.()?.sendVarbit?.(MINIMAP_VARBIT, MINIMAP_OFF);
@@ -567,6 +588,16 @@ function interact(event) {
   return false;
 }
 
+/** Quick-escape (op2) must work from anywhere: route the click onto the player's own tile
+ * so the interaction fires at once instead of pathing to the tunnel (static titans and
+ * walls can block the approach). op1 Inspect keeps the normal reach. */
+function quickEscapeRoute(event) {
+  if (event?.objectId !== Shared.EXIT_OBJECT || event.clickType !== 2) return;
+  const at = event.player?.getLocation?.();
+  if (!at) return;
+  event.destination = { x: at.getX(), y: at.getY(), z: at.getZ() };
+}
+
 function attach(pluginApi) {
   api = pluginApi;
   core = pluginApi.core;
@@ -578,6 +609,7 @@ function attach(pluginApi) {
   pluginApi.persistAttribute(ATTR_DEATHS);
   pluginApi.persistAttribute(ATTR_SESSION_OWNER);
   pluginApi.onObjectInteraction(interact);
+  pluginApi.onObjectRoute(quickEscapeRoute);
   pluginApi.onPlayerLogin(recoverOnLogin);
   pluginApi.onPlayerDeathItemDrop(redirectDeathDrops);
   pluginApi.onPlayerDeath(countDeath);

@@ -55,6 +55,22 @@ const SAFE_TILE_OBJECT = 56003;
 const BLOCKING_OBJECT = 26209;
 const CLEARED_OBJECT = 29733;
 
+/** The arena's authored map: 4x4 chunks of the ice-dungeon region, copied unturned into
+ * every instance by RoyalTitansArea (one engine slot per party). Every tile constant below
+ * is authored space; Shared.instanceTile translates it to the instance's actual tiles. */
+const ARENA_SOURCE_CHUNK = Object.freeze({ x: 362, y: 1194 });
+const ARENA_CHUNKS = 4;
+/** The authored south-west corner (chunk 362 x 8, chunk 1194 x 8). */
+const ARENA_ORIGIN = Object.freeze([ARENA_SOURCE_CHUNK.x * 8, ARENA_SOURCE_CHUNK.y * 8]);
+
+/** The instance tile an authored arena tile is copied to (identity without an instance,
+ * e.g. in unit tests). */
+function instanceTile(area, x, y, z = 0) {
+  const baseX = typeof area?.getBaseX === "function" ? area.getBaseX() : ARENA_ORIGIN[0];
+  const baseY = typeof area?.getBaseY === "function" ? area.getBaseY() : ARENA_ORIGIN[1];
+  return { x: baseX + (x - ARENA_ORIGIN[0]), y: baseY + (y - ARENA_ORIGIN[1]), z };
+}
+
 /** Live spawn tiles and facings, as captured (Branda, then Eldric a tick later). */
 const BRANDA_SPAWN = [2906, 9566, 0];
 const ELDRIC_SPAWN = [2914, 9566, 0];
@@ -303,6 +319,7 @@ function formatTicks(ticks) {
 
 module.exports = {
   SIZE, MAX_HITPOINTS, TELEPORT_THRESHOLD, JOIN_MIN_HITPOINTS,
+  ARENA_SOURCE_CHUNK, ARENA_CHUNKS, ARENA_ORIGIN, instanceTile,
   BRANDA_ID, ELDRIC_ID, BRANDA_CORPSE_ID, ELDRIC_CORPSE_ID,
   FIRE_MINION_ID, ICE_MINION_ID, FIRE_ROW_ID, ICE_ROW_ID,
   BRANDA_PET_ID, ELDRIC_PET_ID,

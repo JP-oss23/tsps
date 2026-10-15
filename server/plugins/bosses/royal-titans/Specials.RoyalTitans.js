@@ -14,8 +14,6 @@ const Shared = require("./Shared.RoyalTitans");
 const Minions = require("./Minions.RoyalTitans");
 const CombatAchievements = require("./CombatAchievements.RoyalTitans");
 
-const WALKABLE_MASK = 0x1280100;
-const ROW_WIDTH = 5;
 const ROW_BAND_MIN = 9562;
 const ROW_BAND_MAX = 9572;
 
@@ -49,10 +47,6 @@ function tileOf(entity) {
   return at ? { x: at.getX(), y: at.getY() } : null;
 }
 
-function isWalkable(x, y) {
-  return (core.RegionManager.getClipping(x, y, 0, null) & WALKABLE_MASK) === 0;
-}
-
 function graphic(id, delay = 0, height = 0) {
   const gfx = new core.Graphic(id);
   gfx.delay = delay;
@@ -60,7 +54,7 @@ function graphic(id, delay = 0, height = 0) {
   return gfx;
 }
 
-/** A map animation every player in the instance sees on a tile. */
+/** A map animation every player in the instance sees; x/y are instance tiles. */
 function tileGraphic(session, x, y, id, delay = 0) {
   const first = session?.players?.[0];
   const sender = first?.getPacketSender?.();
@@ -73,6 +67,24 @@ function areaSounds(session, sounds, x, y) {
   for (const [id, delay] of sounds) {
     core.Sounds.playAreaSound({ soundId: id, x, y, level: 0, delay, radius: 8 });
   }
+}
+
+/** The instance spot of an authored arena tile, as {x, y}. */
+function arenaSpot(session, x, y) {
+  const at = Shared.instanceTile(session?.area, x, y, 0);
+  return { x: at.x, y: at.y };
+}
+
+/** A map animation on an authored arena tile (translated for the instance). */
+function arenaTileGraphic(session, x, y, id, delay = 0) {
+  const at = arenaSpot(session, x, y);
+  tileGraphic(session, at.x, at.y, id, delay);
+}
+
+/** Area sounds at an authored arena tile (translated for the instance). */
+function arenaSounds(session, sounds, x, y) {
+  const at = arenaSpot(session, x, y);
+  areaSounds(session, sounds, at.x, at.y);
 }
 
 function maybeShout(npc, kind) {
@@ -130,12 +142,12 @@ function clearStaticLocs(session) {
   if (session) session.staticLocs = [];
 }
 
-/** Row vfx locs for one cast (shape 10); removed tile by tile as spells clear them. */
-function spawnRowVfx(session, kind, y) {
+/** Row vfx locs for one cast (shape 10); removed tile by tile as spells clear them.
+ * `spots` are instance tiles, one per row tile. */
+function spawnRowVfx(session, kind, spots) {
   const id = kind === "fire" ? Shared.FIRE_ROW_OBJECT : Shared.ICE_ROW_OBJECT;
-  const area = session?.area;
   const objects = [];
-  for (let x = 2909; x <= 2913; x++) {
+  for (const [x, y] of spots) {
     objects.push(addLoc(session, id, x, y, 10, 0));
   }
   return objects;
@@ -155,11 +167,7 @@ function removeRowVfx(session, x, y) {
   }
 }
 
-/**
- * The elemental row: vfx + sounds now, five hitbox NPCs in 4 ticks, living ~40 ticks.
- * The row's y is random in the arena band (captured: no player correlation, docs
- * assumption 4).
- */
+/** addLoc/rows take instance tiles: `spots` holds the authored x-range already mapped. */
 function startRow(npc, target) {
   const session = sessionOf(npc);
   if (!session || npc.getAttribute?.(Shared.ATTR_DYING) === true) return;
@@ -171,18 +179,20 @@ function startRow(npc, target) {
     npc.performGraphic(new core.Graphic(Shared.BRANDA_CAST_GFX.row));
   }
   const y = Shared.randomBetween(ROW_BAND_MIN, ROW_BAND_MAX);
+  const spots = [];
   for (let x = 2909; x <= 2913; x++) {
-    tileGraphic(session, x, y, Shared.ROW_SPAWN_GFX[kind]);
+    const at = arenaSpot(session, x, y);
+    spots.push([at.x, at.y]);
+    tileGraphic(session, at.x, at.y, Shared.ROW_SPAWN_GFX[kind]);
   }
-  areaSounds(session, kind === "fire" ? Shared.SOUND.fireRow : Shared.SOUND.iceRow, 2911, y);
+  arenaSounds(session, kind === "fire" ? Shared.SOUND.fireRow : Shared.SOUND.iceRow, 2911, y);
   CombatAchievements.rowSpawned(session, kind);
   later(Shared.ROW_SPAWN_TICKS, npc, () => {
     if (!alive(npc) || npc.getAttribute?.(Shared.ATTR_DYING) === true) return;
     if (session.area?.isDestroyed?.() === true) return;
-    const vfx = spawnRowVfx(session, kind, y);
+    const vfx = spawnRowVfx(session, kind, spots);
     const rowId = kind === "fire" ? Shared.FIRE_ROW_ID : Shared.ICE_ROW_ID;
-    for (let index = 0; index < ROW_WIDTH; index++) {
-      const x = 2909 + index;
+    spots.forEach(([x, y], index) => {
       const hitbox = core.NPC.create(rowId, new core.Location(x, y, 0));
       hitbox.__skipDefaultRespawn = true;
       // Cleared by the first qualifying spell hit (clearRowTile), never by damage.
@@ -193,7 +203,7 @@ function startRow(npc, target) {
       core.World.getAddNPCQueue().push(hitbox);
       const key = Shared.tileKey(x, y);
       session.rows.set(key, hitbox);
-    }
+    });
   });
 }
 
@@ -280,13 +290,14 @@ function tickRows(session) {
 function startMinions(npc, target) {
   const session = sessionOf(npc);
   if (!session || npc.getAttribute?.(Shared.ATTR_DYING) === true) return;
+  const base = tileOf(npc);
+  if (!base) return;
   const fire = npc.getId() === Shared.BRANDA_ID;
   const anims = Shared.animationsFor(npc.getId());
   npc.setPositionToFace?.(target?.getLocation?.());
   npc.performAnimation(new core.Animation(anims.minions));
   if (fire) npc.performGraphic(new core.Graphic(Shared.BRANDA_CAST_GFX.minions));
-  areaSounds(session, Shared.SOUND.minions, tileOf(npc)?.x ?? 2910, tileOf(npc)?.y ?? 9566);
-  const base = tileOf(npc);
+  areaSounds(session, Shared.SOUND.minions, base.x, base.y);
   const minionId = fire ? Shared.FIRE_MINION_ID : Shared.ICE_MINION_ID;
   const tiles = [
     [base.x + (fire ? 2 : -2), base.y - 3],
@@ -320,13 +331,13 @@ function teleportTitans(trigger) {
   eldric.forceChat?.(Shared.pick(["This is no game anymore!", "Your time is up!", "You'll regret provoking me!"]));
   branda.performAnimation(new core.Animation(Shared.BRANDA_ANIMATIONS.teleport));
   for (let x = 2909; x <= 2913; x++) {
-    for (let y = 9571; y <= 9573; y++) tileGraphic(session, x, y, Shared.TELEPORT_GRID_GFX.fire);
+    for (let y = 9571; y <= 9573; y++) arenaTileGraphic(session, x, y, Shared.TELEPORT_GRID_GFX.fire);
   }
   later(1, eldric, () => {
     if (!alive(eldric)) return;
     eldric.performAnimation(new core.Animation(Shared.ELDRIC_ANIMATIONS.teleport));
     for (let x = 2909; x <= 2913; x++) {
-      for (let y = 9561; y <= 9563; y++) tileGraphic(session, x, y, Shared.TELEPORT_GRID_GFX.ice);
+      for (let y = 9561; y <= 9563; y++) arenaTileGraphic(session, x, y, Shared.TELEPORT_GRID_GFX.ice);
     }
   });
   later(3, branda, () => landTitan(session, branda, Shared.BRANDA_STATIC, Shared.BRANDA_ANIMATIONS.spawn, Shared.BRANDA_CAST_GFX.spawn, [Shared.BRANDA_FLOOR_1, Shared.BRANDA_FLOOR_2]));
@@ -336,18 +347,18 @@ function teleportTitans(trigger) {
 function landTitan(session, npc, tile, spawnAnim, spawnGfx, floors) {
   if (!alive(npc)) return;
   if (session.area?.isDestroyed?.() === true) return;
-  npc.moveTo(new core.Location(tile[0], tile[1], tile[2]));
+  const staticTile = Shared.instanceTile(session.area, tile[0], tile[1], tile[2]);
+  npc.moveTo(new core.Location(staticTile.x, staticTile.y, staticTile.z));
   npc.performAnimation(new core.Animation(spawnAnim));
   if (spawnGfx != null) npc.performGraphic(new core.Graphic(spawnGfx));
-  const area = session.area;
-  const floorTiles = [[tile[0] - 1, tile[1]], [tile[0] + 3, tile[1]]];
+  const floorTiles = [[staticTile.x - 1, staticTile.y], [staticTile.x + 3, staticTile.y]];
   floors.forEach((id, index) => {
-    const [x, y] = floorTiles[index] ?? [tile[0], tile[1]];
+    const [x, y] = floorTiles[index] ?? [staticTile.x, staticTile.y];
     addLoc(session, id, x, y, 10, 0);
   });
   for (let dx = 0; dx <= 2; dx++) {
     for (let dy = 0; dy <= 2; dy++) {
-      addLoc(session, Shared.BLOCKING_OBJECT, tile[0] + dx, tile[1] + dy, 10, 0);
+      addLoc(session, Shared.BLOCKING_OBJECT, staticTile.x + dx, staticTile.y + dy, 10, 0);
     }
   }
   npc.getMovementCoordinator?.().setRadius?.(30);
@@ -424,8 +435,8 @@ function startBlast(session, target) {
       }
     }
     for (let x = 2909; x <= 2913; x++) {
-      for (let y = 9564; y <= 9567; y++) tileGraphic(session, x, y, Shared.BLAST_ICE_GFX);
-      for (let y = 9568; y <= 9570; y++) tileGraphic(session, x, y, Shared.BLAST_FIRE_GFX);
+      for (let y = 9564; y <= 9567; y++) arenaTileGraphic(session, x, y, Shared.BLAST_ICE_GFX);
+      for (let y = 9568; y <= 9570; y++) arenaTileGraphic(session, x, y, Shared.BLAST_FIRE_GFX);
     }
     for (const offset of Shared.BLAST_PULSE_OFFSETS) {
       later(offset, branda, () => blastPulse(session, id));
@@ -441,19 +452,21 @@ function startBlast(session, target) {
   });
 }
 
-/** Safe tile at the blasts' convergence; far from the survivor when one titan is down. */
+/** Safe tile at the blasts' convergence; far from the survivor when one titan is down.
+ * Returned in instance tiles (blastPulse compares against player tiles). */
 function blastSafeTile(session) {
   const brandaDown = session.branda && !alive(session.branda);
   const eldricDown = session.eldric && !alive(session.eldric);
-  if (brandaDown && !eldricDown) return { x: 2911, y: 9563 };
-  if (eldricDown && !brandaDown) return { x: 2911, y: 9571 };
-  return { x: 2912, y: 9567 };
+  let authored = { x: 2912, y: 9567 };
+  if (brandaDown && !eldricDown) authored = { x: 2911, y: 9563 };
+  else if (eldricDown && !brandaDown) authored = { x: 2911, y: 9571 };
+  return arenaSpot(session, authored.x, authored.y);
 }
 
 function blastPulse(session, id) {
   if (session.blastId !== id) return;
   if (session.area?.isDestroyed?.() === true) return;
-  const safe = session.blastSafe ?? { x: 2912, y: 9567 };
+  const safe = session.blastSafe ?? arenaSpot(session, 2912, 9567);
   for (const player of session.players) {
     if (!alive(player)) continue;
     const pos = tileOf(player);
@@ -540,7 +553,8 @@ function rowCanAttack(event) {
   // melee/ranged are refused with the hint.
   let magic = false;
   try {
-    magic = method?.getCombatType?.() === core.CombatType.MAGIC;
+    const type = method?.type?.() ?? method?.getCombatType?.();
+    magic = type === core.CombatType.MAGIC;
   } catch (error) {}
   if (magic) return;
   const kind = target.getId() === Shared.FIRE_ROW_ID ? "fire" : "ice";

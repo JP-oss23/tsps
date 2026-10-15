@@ -50,7 +50,10 @@ All four combat NPCs already have matching entries in `server/data/definitions/m
 
 ## Instance, entry, exit [LOG] [WIKI]
 
-- **Instanced** [LOG]: dynamic region built from base (2880-2952, 9536+) to (15680+, 2560+). Party 1-2 [WIKI]. A second player can join a solo fight only while the titans are still fresh (see Assumptions).
+- **Instanced** [LOG]: live builds a dynamic region from base (2880-2952, 9536+) to (15680+, 2560+); we copy the same authored map instead — a `TemplatedInstanceArea` of 4x4 chunks (source chunk 362,1194, unturned), allocated a slot outside the real map (tile 8192+/1600+, 7x60 slots, 20-chunk stride, released when the instance empties). Each party gets its own drawn copy and its own collision/locs, the client is sent the REBUILD_REGION palette, and everything the fight spawns is area-scoped. Party 1-2 [WIKI]. A second player can join a solo fight only while the titans are still fresh (see Assumptions).
+  - The arena tiles are authored space (2896-2927 x 9552-9583); the instance lands them at `base + (tile - 2896, tile - 9552)` via `Shared.instanceTile`.
+  - The exit loc (55987) is part of the copied chunks, so it exists per-instance; the entrance tunnel and scoreboard stay in the real world (2948/2954), outside the copy.
+  - Quick-escape (exit op2) routes the click onto the player's own tile first, so it works from anywhere in the arena instead of pathing to the tunnel.
 - **Getting there** [WIKI]: western Asgarnian Ice Dungeon (fairy ring `AIQ`); giantsoul amulet teleports outside the entrance tunnel.
 - **Entrance** [LOG]: loc `royal_titans_entrance` (55986) at (2948, 9573).
   - op1: chatmenu "Select an option": `Start a fight (Your friends will be able to join you).|Join a fight.|Do nothing.` (runclientscript 58).
@@ -211,7 +214,7 @@ Either titan casts either special. Told apart by anim + slot-2 spotanim (fire su
 
 - **Elemental row (`..._attack_summon01`: Branda 11976, Eldric 11977):**
   - Same tick: 5-wide `..._loc01_spawn01` vfx row (fire 3218, ice 3221) at x=2909-2913. **+4 ticks:** five hitbox NPCs on it: `rs_loc_attack_fire_hitbox` (14152) / `rs_loc_attack_ice_hitbox` (14153).
-  - **Clearing:** any opposite-element spell removes tiles early (fire row: water/ice spell; ice row: fire spell — Wave-tier gate dropped: captures only show the hint after physical clicks, and Yama's surges clear with any water spell). Cleared tiles play `..._loc01_despawn01` (Branda 3220, Eldric 3223) and become `invisible_type8_nonblocking` (29733); overlapping rows track their own graphics, so one row clearing never strips another's.
+  - **Clearing:** any opposite-element spell removes tiles early (fire row: water/ice spell; ice row: fire spell). Live-verified: casting the right surge at a row tile clears that tile (the hit-interception path), and clicking Douse/Melt with the right spell in hand clears it too; anything else hints. The client keeps a spell selected after a successful cast (OSRS), so repeated casts work without re-selecting. Cleared tiles play `..._loc01_despawn01` (Branda 3220, Eldric 3223) and become `invisible_type8_nonblocking` (29733); overlapping rows track their own graphics, so one row clearing never strips another's.
   - **Lifetime ~40 ticks** if left alone (captured lives 34-40); spell-cleared rows die in 2-10. Walking/standing on a live tile deals the wall hit (max 12 [WIKI]; 10/12 player-hits in 02283 [LOG]); rows never vanish under your feet and don't physically block (OSRS NPCs are walk-through). Contact damage pulses about every 3 ticks — rate estimated [EST], Wiki gives no interval.
   - **Sounds:** fire 10116 + 10118 (delay 122); ice 10146/10147 (delay 5) + 10148 (delay 120), range 1 per tile.
 - **Summon elementals (`..._attack_summon02`: Branda 11978, Eldric 11977):**

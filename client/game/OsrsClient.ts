@@ -4725,7 +4725,8 @@ export class OsrsClient {
                 console.warn(`[spell] Cast failed (${reason})`, payload);
             }
         } else if (payload.outcome === "success") {
-            if (isSelfCast && !isAutocast) this.clearSelectedSpell();
+            // OSRS: the selected spell stays selected after a cast, so the next click on a
+            // target casts it again (a failed cast is what clears the selection, above).
 
             // OSRS-style: rely on server 'spot' messages for cast windup; avoid local duplicate here.
 
