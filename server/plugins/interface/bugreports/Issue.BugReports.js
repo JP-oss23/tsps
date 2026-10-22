@@ -12,8 +12,25 @@ const MAX_LOG_LINE = 400;
 const MAX_MESSAGES = 25;
 const RIGHTS = ["player", "moderator", "administrator", "owner", "developer"];
 
+/**
+ * At most `max` characters of `value`, counted in code points: a cut by UTF-16 units can leave
+ * half an emoji, which GitHub stores as "?".
+ */
+function cut(value, max) {
+  let end = 0;
+  let kept = 0;
+  for (const char of value) {
+    if (kept++ === max) break;
+    end += char.length;
+  }
+  return value.slice(0, end);
+}
+
+/** `value` if it fits in `max` characters, else its first `max - 1` and an ellipsis. */
+const clip = (value, max) => (cut(value, max).length < value.length ? `${cut(value, max - 1)}…` : value);
+
 const isObject = (value) => !!value && typeof value === "object" && !Array.isArray(value);
-const text = (value, max = 200) => (typeof value === "string" ? value.slice(0, max) : "");
+const text = (value, max = 200) => (typeof value === "string" ? cut(value, max) : "");
 const number = (value) => (Number.isFinite(value) ? value : undefined);
 
 /**
@@ -30,8 +47,7 @@ function inert(value) {
 }
 
 function quote(description) {
-  return description
-    .slice(0, MAX_DESCRIPTION)
+  return cut(description, MAX_DESCRIPTION)
     .split(/\r?\n/)
     .map((line) => `> ${inert(line)}`)
     .join("\n");
@@ -53,8 +69,7 @@ const plain = (value, max) => text(value, max).replace(/<[^>]*>/g, "").replace(/
 
 function issueTitle(report) {
   const line = report.description.split(/\r?\n/).find((part) => part.trim()) ?? "Bug report";
-  const title = line.replace(/\s+/g, " ").trim().replace(/@(?=\w)/g, "@​");
-  return title.length > MAX_TITLE ? `${title.slice(0, MAX_TITLE - 1)}…` : title;
+  return clip(line.replace(/\s+/g, " ").trim().replace(/@(?=\w)/g, "@​"), MAX_TITLE);
 }
 
 const formatTile = (tile) => `${tile.x}, ${tile.y}, ${tile.z}`;
@@ -135,9 +150,8 @@ function logSection(client) {
   }
   const shown = flagged.slice(-MAX_LOG_LINES).map((entry) => {
     const time = number(entry.time) ? new Date(entry.time).toISOString().slice(11, 23) : "";
-    const line = text(entry.text, MAX_LOG_LINE * 4).replace(/\s*\n\s*/g, " ⏎ ");
-    const clipped = line.length > MAX_LOG_LINE ? `${line.slice(0, MAX_LOG_LINE - 1)}…` : line;
-    return `${time} ${String(entry.level).toUpperCase().padEnd(5)} ${clipped}`;
+    const line = clip(text(entry.text, MAX_LOG_LINE * 4).replace(/\s*\n\s*/g, " ⏎ "), MAX_LOG_LINE);
+    return `${time} ${String(entry.level).toUpperCase().padEnd(5)} ${line}`;
   });
   const of = flagged.length > shown.length ? `the last ${shown.length} of ${flagged.length}` : `${flagged.length}`;
   return details(`Client warnings and errors, last 5 minutes (${of}; ${logs.length} lines in all)`, codeBlock(shown));

@@ -3,7 +3,7 @@ import { strict as assert } from "node:assert";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { GameStateChanged, PluginMessage } from "@runelite/api/events";
+import { GameStateChanged, GameTick, PluginMessage } from "@runelite/api/events";
 import { GameState } from "@runelite/api/GameState";
 import { ConfigManager } from "@runelite/client/config/ConfigManager";
 import { EventBus } from "@runelite/client/eventbus/EventBus";
@@ -395,6 +395,43 @@ async function testPlugin(): Promise<void> {
     bus.post(new GameStateChanged(GameState.LOGIN_SCREEN));
     bus.post(new GameStateChanged(GameState.LOGGED_IN));
     assert.equal(statusRequests(), 2, "with the form closed, logging in sends nothing");
+
+    // Left open through login, the form's picture is the welcome screen ("Click here to play")
+    // until the player enters the world, which takes another unless they wrote or retook one.
+    const drawFrame = async (): Promise<void> => {
+        engine.afterFrame(scene as unknown as HTMLCanvasElement);
+        await flush();
+    };
+    const tick = (rootInterface: number): void => {
+        client.widgetManager.rootInterface = rootInterface;
+        bus.post(new GameTick());
+    };
+    const closePanel = plugin.panelShown();
+    const entersWorld = async (onWelcomeScreen?: () => unknown): Promise<boolean> => {
+        loggedIn = false;
+        bus.post(new GameStateChanged(GameState.LOGIN_SCREEN));
+        plugin.reset();
+        loggedIn = true;
+        bus.post(new GameStateChanged(GameState.LOGGED_IN));
+        assert.equal(plugin.getState().capturing, true, "logging in takes a picture");
+        tick(378);
+        await drawFrame();
+        void onWelcomeScreen?.();
+        await drawFrame();
+        tick(378);
+        assert.equal(plugin.getState().capturing, false, "the welcome screen is taken once");
+        tick(161);
+        const retaken = plugin.getState().capturing;
+        await drawFrame();
+        tick(161);
+        assert.equal(plugin.getState().capturing, false, "and the world once");
+        return retaken;
+    };
+    assert.equal(await entersWorld(), true, "nothing written: the world replaces the welcome screen");
+    assert.equal(await entersWorld(() => plugin.setDescription("The welcome screen's message is blank")), false,
+        "a description keeps the welcome screen");
+    assert.equal(await entersWorld(() => plugin.retakeScreenshot()), false, "and so does the player's own retake");
+    closePanel();
 
     await manager.setPluginEnabled(BugReportPlugin, false);
     assert.equal(console.warn, realConsole.warn, "turning the plugin off restores the console");

@@ -20,7 +20,9 @@ reproduce it without asking the player again.
 - **A screenshot:** optional, on by default. It's the game as drawn when the form opened, the
   scene and the interface canvases composed (HTML overlays such as the timers are left out),
   as a JPEG of at most 1600 × 1200. The form takes a new one whenever it opens with nothing
-  written; a draft keeps its own, and Retake screenshot takes it again.
+  written; a draft keeps its own, and Retake screenshot takes it again. A form left open
+  through login takes the welcome screen, then the world once the player clicks to play,
+  unless they've written something or retaken it by then.
 - **Diagnostics:** on by default; the form says so, and the player can turn them off.
   - **The client:** its console over the last 5 minutes (every console call, uncaught errors
     and unhandled rejections, each line cut at 2,000 characters), the browser, renderer,

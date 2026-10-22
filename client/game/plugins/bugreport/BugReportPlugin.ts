@@ -16,6 +16,8 @@ import { composeGameFrame, encodeScreenshot } from "./gameScreenshot";
 // Cache chatbox: the Report button (162:31), whose op 4 is "Report game bug".
 const REPORT_BUTTON = (162 << 16) | 31;
 const REPORT_GAME_BUG_OP = 4;
+// The welcome screen: the root interface from login until the player clicks to play.
+const WELCOME_SCREEN = 378;
 const FRAME_TIMEOUT_MS = 2000;
 
 /** crypto.randomUUID needs a secure context; a LAN address over plain http isn't one. */
@@ -83,6 +85,10 @@ export class BugReportPlugin extends Plugin {
     private frameWaiter?: (frame: HTMLCanvasElement | undefined) => void;
     /** Counts screenshot requests, so an older capture that finishes late can't replace a newer one. */
     private captures = 0;
+    /** The screenshot is one the player asked for with Retake screenshot, not one the form took. */
+    private screenshotAsked = false;
+    /** The welcome screen ("Click here to play") was up at the last game tick. */
+    private onWelcomeScreen = false;
     private statusRequested = false;
     private panelsShown = 0;
     private state: BugReportState = { ...FRESH_FORM, world: "unknown" };
@@ -138,7 +144,7 @@ export class BugReportPlugin extends Plugin {
      */
     panelOpened(fresh = !this.state.description.trim()): void {
         if (this.state.phase === "sent") this.update({ ...FRESH_FORM });
-        if (!this.state.capturing && (fresh || !this.state.screenshot)) void this.retakeScreenshot();
+        if (!this.state.capturing && (fresh || !this.state.screenshot)) void this.takeScreenshot();
         if (this.state.world === "unknown" && !this.statusRequested && this.client.isLoggedIn() && isSocketOpen()) {
             this.statusRequested = true;
             send({ type: "plugin_message", payload: { channel: BUG_REPORT_CHANNEL, data: { type: "status" } } });
@@ -160,12 +166,18 @@ export class BugReportPlugin extends Plugin {
     /** "Report another bug": a fresh form with a new screenshot. */
     reset(): void {
         this.update({ ...FRESH_FORM });
-        void this.retakeScreenshot();
+        void this.takeScreenshot();
     }
 
-    async retakeScreenshot(): Promise<void> {
+    /** Retake screenshot: the player's own picture, which entering the world doesn't replace. */
+    retakeScreenshot(): Promise<void> {
+        return this.takeScreenshot(true);
+    }
+
+    private async takeScreenshot(asked = false): Promise<void> {
         if (!this.client.isLoggedIn()) return;
         const capture = ++this.captures;
+        this.screenshotAsked = asked;
         this.update({ capturing: true });
         let screenshot: string | undefined;
         try {
@@ -250,12 +262,26 @@ export class BugReportPlugin extends Plugin {
         if ([GameState.LOGIN_SCREEN, GameState.CONNECTION_LOST, GameState.HOPPING].includes(state)) {
             this.upload.cancel("You were logged out before the report was sent.");
             this.statusRequested = false;
+            this.onWelcomeScreen = false;
             this.update({ world: "unknown", destination: undefined });
         } else if (state === GameState.LOGGED_IN && this.panelsShown > 0) {
             // The form was open on the login screen: now there's a game to capture and a world to ask.
             this.panelOpened();
         } else {
             this.update({});
+        }
+    }
+
+    /**
+     * A form open through login took the welcome screen ("Click here to play"). When the player
+     * enters the world, it takes the world instead, unless they wrote something or retook it.
+     */
+    onGameTick(): void {
+        const welcome = this.client.widgetManager?.rootInterface === WELCOME_SCREEN;
+        const enteredWorld = this.onWelcomeScreen && !welcome;
+        this.onWelcomeScreen = welcome;
+        if (enteredWorld && this.panelsShown > 0 && !this.screenshotAsked && !this.state.description.trim()) {
+            void this.takeScreenshot();
         }
     }
 

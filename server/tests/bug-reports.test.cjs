@@ -167,6 +167,21 @@ test('the issue: the description made inert, the context, and the long tails fol
   assert.equal(issueTitle({ description: 'ping @someone' }), 'ping @​someone');
 });
 
+test('cuts count characters, so none leaves half an emoji (GitHub stores the half as "?")', () => {
+  assert.equal(issueTitle({ description: `${'a'.repeat(78)}🐛🐛 and more` }), `${'a'.repeat(78)}🐛…`);
+  assert.equal(issueTitle({ description: '🐛'.repeat(80) }), '🐛'.repeat(80), 'eighty emoji are eighty characters');
+  const body = issueBody({
+    id: 'report-0001', reportedAt: '2026-10-21T10:00:00.000Z', username: 'Zezima', description: 'Emoji',
+    client: {
+      logs: [{ time: Date.UTC(2026, 9, 21, 9, 59, 2), level: 'warn', text: `${'x'.repeat(398)}🐛🐛 and more` }],
+      messages: [{ time: 1, text: `${'m'.repeat(299)}🐛 and more` }],
+    },
+  }, {});
+  assert.ok(body.includes(`WARN  ${'x'.repeat(398)}🐛…\n`), 'a console line');
+  assert.ok(body.includes(`\n${'m'.repeat(299)}🐛\n`), 'a game message');
+  assert.ok(body.isWellFormed());
+});
+
 test('GitHub: the screenshot and diagnostics are committed, then the issue links them', async () => {
   const requests = [];
   const fetch = async (url, init) => {
