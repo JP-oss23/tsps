@@ -20,6 +20,26 @@ export type LogLimits = { entries: number; chars: number };
 const CHATTER_LIMITS: LogLimits = { entries: 3000, chars: 500_000 };
 const ALERT_LIMITS: LogLimits = { entries: 1000, chars: 250_000 };
 
+/**
+ * Console lines that carry what the player typed, up to where the text starts: chat, friends
+ * chat and ::commands (sendChat logs each one twice), and what goes into a name or text dialog.
+ * A report keeps the line, so it still shows that a message went, but not what it said.
+ */
+const TYPED_TEXT: readonly RegExp[] = [
+    /^\[sendChat\] [^"]*(?=")/,
+    /^\[InputDialog\] (?:Name|String) dialog submitted: (?=")/,
+    /^\[InputDialog\] Complete: type=(?:name|obj|string), value=/,
+];
+
+/** A console line with anything the player typed left out. */
+export function withoutTypedText(text: string): string {
+    for (const pattern of TYPED_TEXT) {
+        const kept = pattern.exec(text)?.[0];
+        if (kept !== undefined) return `${kept}(text left out)`;
+    }
+    return text;
+}
+
 /** Lines of one kind, oldest first, within a count and a character budget. */
 class LogQueue {
     private entries: ClientLogEntry[] = [];
@@ -59,6 +79,7 @@ class LogQueue {
 /**
  * The client's console over the last five minutes. Each line becomes text when it's logged, at
  * most 2,000 characters, so the buffer holds no game objects and costs no more than the line.
+ * What the player typed is left out then, so the buffer never holds it.
  */
 export class ClientLogBuffer {
     private readonly chatter: LogQueue;
@@ -76,7 +97,7 @@ export class ClientLogBuffer {
 
     add(level: ClientLogLevel, args: readonly unknown[]): void {
         const queue = level === "warn" || level === "error" ? this.alerts : this.chatter;
-        queue.push({ time: this.now(), level, text: formatLogArgs(args) });
+        queue.push({ time: this.now(), level, text: withoutTypedText(formatLogArgs(args)) });
         queue.prune(this.now() - this.windowMs);
     }
 

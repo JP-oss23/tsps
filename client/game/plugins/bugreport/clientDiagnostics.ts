@@ -60,7 +60,8 @@ function plugins(client: OsrsClient) {
 
 /**
  * What the client knows as the report is sent. Only named fields are read: the login and
- * connection state also hold the player's password. Game messages only, no player chat.
+ * connection state also hold the player's password. Game messages only, no player chat; the
+ * log buffer leaves the text of chat and dialogs out of the console lines.
  */
 export function collectClientDiagnostics(client: OsrsClient, logs: ClientLogBuffer) {
     return {

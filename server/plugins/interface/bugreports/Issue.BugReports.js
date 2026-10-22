@@ -17,8 +17,9 @@ const text = (value, max = 200) => (typeof value === "string" ? value.slice(0, m
 const number = (value) => (Number.isFinite(value) ? value : undefined);
 
 /**
- * Text that renders as typed: no HTML, links, images, code or headings, and a zero-width space
- * after `@` and `#` so a name or number never mentions anyone or links an issue.
+ * Text that renders as typed: no HTML, Markdown links, images, code or headings, and a zero-width
+ * space after `@` and `#` so a name or number never mentions anyone or links an issue. GitHub
+ * still links a bare URL, with the URL as its text.
  */
 function inert(value) {
   return String(value)

@@ -26,7 +26,9 @@ reproduce it without asking the player again.
     and unhandled rejections, each line cut at 2,000 characters), the browser, renderer,
     viewport, fps and cache, the world, the position, inventory, equipment, skills, non-zero
     varps, mounted interfaces, enabled and failed plugins, and the last 50 game messages.
-    Player chat is left out.
+    Player chat is left out: the messages are the game's own, and console lines that carry
+    what the player typed (chat, friends chat, ::commands, name and text dialogs) keep the
+    line without the text.
   - **Console budget:** the client logs every widget event, about 40 lines a second, so
     ordinary lines keep the newest 3,000 (500 KB), a minute or two. Warnings and errors have a
     budget of their own (1,000 lines, 250 KB), so chatter never pushes them out of the 5 minutes.
@@ -39,7 +41,8 @@ reproduce it without asking the player again.
 The issue puts the description first, then the screenshot and a table of where and on what it
 happened; client warnings and errors, game messages, and items sit in collapsed sections, and
 everything else is in `diagnostics.json`. The player's text is made inert: it can't mention
-anyone, link an issue, or add HTML, links or images.
+anyone, link an issue, or add HTML, Markdown links or images. GitHub still makes a link of a
+bare address (`https://…`), with the address as its text.
 
 ## Where reports go
 

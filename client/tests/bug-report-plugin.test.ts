@@ -22,6 +22,7 @@ import {
 } from "../game/plugins/bugreport/BugReportUpload";
 import { ClientLogBuffer, LOG_WINDOW_MS, captureConsole, formatLogArgs } from "../game/plugins/bugreport/ClientLogBuffer";
 import { encodeClientMessage } from "../network/packet/ClientBinaryEncoder";
+import { sendChat } from "../network/serverConnection/outgoing/inventoryChat";
 import { state } from "../network/serverConnection/state";
 
 /** Microtasks and a few timer turns: Blob.arrayBuffer() resolves on a later turn. */
@@ -89,6 +90,39 @@ function testLogBuffer(): void {
     restore();
     assert.equal(target.warn, original);
     assert.equal(listeners.size, 0);
+
+    // What the player typed never reaches a report: sendChat logs a message twice, and name and
+    // text dialogs log their input. The lines stay without the text; a count stays as it is.
+    const typed = new ClientLogBuffer(() => now);
+    const quietLog = console.log;
+    console.log = () => {};
+    const restoreConsole = captureConsole(typed, console as unknown as Parameters<typeof captureConsole>[1], undefined);
+    const socket = state.socket;
+    state.socket = { readyState: 1, send() {} } as any;
+    try {
+        sendChat("meet me at the bank");
+        sendChat("/clan secret", "friends_chat", 2);
+    } finally {
+        state.socket = socket;
+        restoreConsole();
+        console.log = quietLog;
+    }
+    typed.add("log", ['[InputDialog] String dialog submitted: "hunter2"']);
+    typed.add("log", ['[InputDialog] Name dialog submitted: "Zezima"']);
+    typed.add("log", ["[InputDialog] Complete: type=string, value=hunter2"]);
+    typed.add("log", ["[InputDialog] Complete: type=count, value=28"]);
+    const lines = typed.recent().map((entry) => entry.text);
+    assert.deepEqual(lines, [
+        "[sendChat] Attempting to send: (text left out)",
+        "[sendChat] Sending to server: (text left out)",
+        "[sendChat] Attempting to send: (text left out)",
+        "[sendChat] Sending to server: (text left out)",
+        "[InputDialog] String dialog submitted: (text left out)",
+        "[InputDialog] Name dialog submitted: (text left out)",
+        "[InputDialog] Complete: type=string, value=(text left out)",
+        "[InputDialog] Complete: type=count, value=28",
+    ]);
+    assert.ok(!/bank|secret|hunter2|Zezima/i.test(lines.join("\n")), "no typed text is kept");
 }
 
 async function testUpload(): Promise<void> {
