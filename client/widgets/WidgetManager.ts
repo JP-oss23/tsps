@@ -14,6 +14,12 @@ export interface WidgetGroupInstance {
     widgetsByFileId: Map<number, WidgetNode>;
 }
 
+type TimerWidgetPath = {
+    widget: WidgetNode;
+    parent?: TimerWidgetPath;
+    containerUid?: number;
+};
+
 /** ContentType constants from OSRS client */
 export const ContentType = {
     VIEWPORT: 1337, // 3D game viewport
@@ -68,6 +74,9 @@ export class WidgetManager {
     private widgetByUid: Map<number, WidgetNode> = new Map();
     /** The model (type-6) widgets in widgetByUid; dropped whenever widgetByUid changes. */
     private modelWidgets?: WidgetNode[];
+    private readonly timerWidgets = new Map<number, WidgetNode>();
+    private timerWidgetPaths?: TimerWidgetPath[];
+    private timerRootInterface = -1;
     private widgetUidsByGroup: Map<number, Set<number>> = new Map();
     /**
      * Dynamic UID allocator per group for CC_CREATE/CC_COPY.
@@ -80,6 +89,8 @@ export class WidgetManager {
      * Key: (widget.id << 32) | (widget.childIndex & 0xffffffff)
      */
     private widgetFlagsOverrides: Map<bigint, number> = new Map();
+    /** Op transmit masks from IF_SETEVENTS_V2 (bit N for op N+1), same keys as the flags. */
+    private widgetOpMaskOverrides: Map<bigint, number> = new Map();
     private widgetFlagsVersion: number = 1;
 
     /**
@@ -153,6 +164,11 @@ export class WidgetManager {
     onGroupLoaded?: (groupId: number) => void;
     /** Callback fired when an interface closes - used to clean up click targets */
     onInterfaceClose?: (groupId: number) => void;
+    /**
+     * Called for each widget CC_DELETE / CC_DELETEALL removes. Dynamic widgets get a fresh uid
+     * each time they are created, so whatever is keyed by uid must be dropped here.
+     */
+    onWidgetUnregistered?: (uid: number) => void;
     onResizeListener?: (scriptId: number, sourceWidget: WidgetNode) => void;
     /** Invoker for runtime-set onResize handlers (set via IF_SETONRESIZE) */
     onResizeInvoker?: (sourceWidget: WidgetNode) => void;
@@ -1054,6 +1070,85 @@ export class WidgetManager {
         return this.widgetByUid.get(uid);
     }
 
+    /** Called after registering a widget or replacing its timer listener. Args stay live. */
+    updateTimerWidget(widget: WidgetNode): void {
+        if (this.widgetByUid.get(widget.uid) !== widget) return;
+        const hasTimer = (Array.isArray(widget.onTimer) && widget.onTimer.length > 0) ||
+            (widget.eventHandlers?.onTimer?.scriptId ?? 0) > 0;
+        const previous = this.timerWidgets.get(widget.uid);
+        if (hasTimer) {
+            if (previous === widget) return;
+            this.timerWidgets.set(widget.uid, widget);
+        } else if (!this.timerWidgets.delete(widget.uid)) {
+            return;
+        }
+        this.timerWidgetPaths = undefined;
+    }
+
+    private getTimerWidgetPaths(): TimerWidgetPath[] {
+        if (this.timerWidgetPaths && this.timerRootInterface === this.rootInterface) {
+            return this.timerWidgetPaths;
+        }
+        const paths: TimerWidgetPath[] = [];
+        const roots = this.rootInterface === -1 ? [] : this.getAllGroupRoots(this.rootInterface);
+        const stack: TimerWidgetPath[] = roots.map(widget => ({ widget }));
+        if (roots.length) {
+            for (const [containerUid, parent] of this.interfaceParents) {
+                if (!parent || parent.group === this.rootInterface) continue;
+                for (const widget of this.getAllGroupRoots(parent.group)) stack.push({ widget, containerUid });
+            }
+        }
+        // Keep alternate mounts: a later hidden mount must not suppress an earlier visible one.
+        const visitedByMount = new Map<number | undefined, Set<number>>();
+        while (stack.length) {
+            const path = stack.pop()!;
+            const node = path.widget;
+            const uid = (node?.uid ?? 0) | 0;
+            let visited = visitedByMount.get(path.containerUid);
+            if (!visited) visitedByMount.set(path.containerUid, visited = new Set());
+            if (!uid || visited.has(uid)) continue;
+            visited.add(uid);
+            if (this.timerWidgets.get(uid) === node) paths.push(path);
+            // Include hidden ancestors so showing a tab never needs another tree scan.
+            const children = this.getStaticChildrenByParentUid(uid);
+            for (let i = children.length - 1; i >= 0; i--) {
+                stack.push({ widget: children[i], parent: path, containerUid: path.containerUid });
+            }
+            if (Array.isArray(node.children)) {
+                for (let i = node.children.length - 1; i >= 0; i--) {
+                    const child = node.children[i];
+                    if (child) stack.push({ widget: child, parent: path, containerUid: path.containerUid });
+                }
+            }
+        }
+        this.timerRootInterface = this.rootInterface;
+        return this.timerWidgetPaths = paths;
+    }
+
+    private isTimerPathVisible(path: TimerWidgetPath): boolean {
+        if (path.containerUid !== undefined && this.isEffectivelyHidden(path.containerUid)) return false;
+        for (let current: TimerWidgetPath | undefined = path; current; current = current.parent) {
+            if (current.widget.hidden) return false;
+        }
+        return true;
+    }
+
+    getActiveTimerWidgets(): WidgetNode[] {
+        const active: WidgetNode[] = [];
+        const visited = new Set<number>();
+        for (const path of this.getTimerWidgetPaths()) {
+            if (!visited.has(path.widget.uid) && this.isTimerPathVisible(path)) {
+                visited.add(path.widget.uid);
+                active.push(path.widget);
+            }
+        }
+        return active;
+    }
+
+    isTimerWidgetActive(widget: WidgetNode): boolean {
+        return this.getTimerWidgetPaths().some(path => path.widget === widget && this.isTimerPathVisible(path));
+    }
+
     /**
      * Return whether a RESUME_PAUSEBUTTON click should be sent now.
      *
@@ -1214,6 +1309,7 @@ export class WidgetManager {
         if (widget && typeof widget.uid === "number") {
             this.widgetByUid.set(widget.uid, widget);
             this.modelWidgets = undefined;
+            this.updateTimerWidget(widget);
             this.maybeInvalidateDynamicChildrenCache(widget);
         }
     }
@@ -1226,6 +1322,8 @@ export class WidgetManager {
         this.maybeInvalidateDynamicChildrenCache(widget);
         this.widgetByUid.delete(uid);
         this.modelWidgets = undefined;
+        if (this.timerWidgets.delete(uid)) this.timerWidgetPaths = undefined;
+        this.onWidgetUnregistered?.(uid);
     }
 
     /**
@@ -1237,6 +1335,8 @@ export class WidgetManager {
         if (typeof widget.uid === "number") {
             this.widgetByUid.delete(widget.uid);
             this.modelWidgets = undefined;
+            if (this.timerWidgets.delete(widget.uid)) this.timerWidgetPaths = undefined;
+            this.onWidgetUnregistered?.(widget.uid);
         }
         if (Array.isArray(widget.children)) {
             for (const child of widget.children) {
@@ -1294,6 +1394,8 @@ export class WidgetManager {
         this.groups.clear();
         this.widgetByUid.clear();
         this.modelWidgets = undefined;
+        this.timerWidgets.clear();
+        this.timerWidgetPaths = undefined;
         this.widgetUidsByGroup.clear();
         this.staticChildrenByParent.clear();
         this.rootsByGroup.clear();
@@ -1306,6 +1408,7 @@ export class WidgetManager {
 
         // Clear widget flags overrides
         this.widgetFlagsOverrides.clear();
+        this.widgetOpMaskOverrides.clear();
         this.widgetFlagsVersion++;
 
         // Clear sub-interface tracking state
@@ -1463,6 +1566,7 @@ export class WidgetManager {
             typeof (w as any).childIndex === "number" ? (w as any).childIndex | 0 : -1;
         const key = this.makeWidgetFlagsKey(id, childIndex);
         this.widgetFlagsOverrides.set(key, flags | 0);
+        this.widgetOpMaskOverrides.delete(key);
         this.widgetFlagsVersion++;
     }
 
@@ -1472,10 +1576,27 @@ export class WidgetManager {
      * without needing the actual widget objects to exist yet.
      * Reference: IF_SETEVENTS stores flags in Client.widgetFlags with key (id << 32) | childIndex
      */
-    setWidgetFlagsByKey(id: number, childIndex: number, flags: number): void {
+    setWidgetFlagsByKey(id: number, childIndex: number, flags: number, opMask?: number): void {
         const key = this.makeWidgetFlagsKey(id | 0, childIndex | 0);
-        this.widgetFlagsOverrides.set(key, flags | 0);
+        if (opMask === undefined) {
+            this.widgetFlagsOverrides.set(key, flags | 0);
+            this.widgetOpMaskOverrides.delete(key);
+        } else {
+            // IF_SETEVENTS_V2: the op mask carries every op's transmit bit; ops 1-10 also go
+            // into flag bits 1-10, where the rest of the client reads them.
+            this.widgetFlagsOverrides.set(key, (flags & ~0x7fe) | ((opMask & 0x3ff) << 1));
+            this.widgetOpMaskOverrides.set(key, opMask | 0);
+        }
         this.widgetFlagsVersion++;
+    }
+
+    /** The op transmit mask IF_SETEVENTS_V2 set for a widget (bit N for op N+1), or 0. */
+    getWidgetOpMask(w: WidgetNode | null | undefined): number {
+        if (!w) return 0;
+        const id = ((w as any).id ?? w.uid) | 0;
+        const childIndex =
+            typeof (w as any).childIndex === "number" ? (w as any).childIndex | 0 : -1;
+        return (this.widgetOpMaskOverrides.get(this.makeWidgetFlagsKey(id, childIndex)) ?? 0) | 0;
     }
 
     /**
@@ -1512,7 +1633,10 @@ export class WidgetManager {
             const keyGroup = (key >> 48n) & 0xffffn;
             if (keyGroup === g) toDelete.push(key);
         }
-        for (const key of toDelete) this.widgetFlagsOverrides.delete(key);
+        for (const key of toDelete) {
+            this.widgetFlagsOverrides.delete(key);
+            this.widgetOpMaskOverrides.delete(key);
+        }
         if (toDelete.length > 0) this.widgetFlagsVersion++;
     }
 
@@ -1543,6 +1667,7 @@ export class WidgetManager {
                 widgetsByUid.set(uid, node);
                 this.widgetByUid.set(uid, node);
                 this.modelWidgets = undefined;
+                this.updateTimerWidget(node);
                 uids.add(uid);
             }
             const nodeGroupId = typeof node.groupId === "number" ? node.groupId | 0 : groupId;
@@ -1591,6 +1716,10 @@ export class WidgetManager {
     }
 
     private clearGroupIndex(groupId: number) {
+        this.timerWidgetPaths = undefined;
+        for (const uid of this.timerWidgets.keys()) {
+            if ((uid >>> 16) === (groupId | 0)) this.timerWidgets.delete(uid);
+        }
         const tracked = this.widgetUidsByGroup.get(groupId);
         if (!tracked) {
             return;
@@ -1637,9 +1766,11 @@ export class WidgetManager {
         // Clear mounted sub-interfaces (they belong to the old root)
         this.interfaceParents.clear();
         this.groupToContainerUid.clear();
+        this.timerWidgetPaths = undefined;
         // Clear runtime widget flags overrides on major interface changes.
         // Reinitialize widgetFlags when interface parents are refreshed.
         this.widgetFlagsOverrides.clear();
+        this.widgetOpMaskOverrides.clear();
         this.widgetFlagsVersion++;
 
         // Mark all widgets dirty - major interface change requires full redraw
@@ -1768,6 +1899,7 @@ export class WidgetManager {
 
         // Track the mounting
         this.interfaceParents.set(targetUid, { group: groupId, type });
+        this.timerWidgetPaths = undefined;
         // PERF: Maintain reverse lookup for O(1) visibility checks
         this.groupToContainerUid.set(groupId, targetUid);
 
@@ -1868,6 +2000,7 @@ export class WidgetManager {
             }
         }
         this.interfaceParents.delete(targetUid);
+        this.timerWidgetPaths = undefined;
         // PERF: Maintain reverse lookup for O(1) visibility checks
         this.groupToContainerUid.delete(parent.group);
         // Clear any widget flag overrides for the closed interface group.
@@ -2189,8 +2322,7 @@ export class WidgetManager {
         const currentAngle = this.compassWidget.spriteAngle ?? 0;
         if (currentAngle !== spriteAngle) {
             this.compassWidget.spriteAngle = spriteAngle;
-            // Mark compass widget as dirty for redraw
-            this.invalidateWidgetRender(this.compassWidget, "compass");
+            this.invalidateWidgetRect(this.compassWidget);
         }
     }
 

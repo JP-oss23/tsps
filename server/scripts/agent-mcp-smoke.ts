@@ -18,6 +18,7 @@ const packetSender = {
     sendGraphic: (_graphic: any, _location: any) => packetSender,
     getChatboxGroupId: () => 231,
     sendMessage: (message: string) => clientMessages.push(message),
+    sendTypedMessage: (_type: number, message: string) => clientMessages.push(message),
     sendVarbit: (id: number, value: number) => { varbits.set(id, value); return packetSender; },
     getVarbit: (id: number) => varbits.get(id) ?? 0,
     getVarp: () => 0,
@@ -28,6 +29,7 @@ class NpcDialogue {
     getNpcId() { return this.npcId; }
     getText() { return this.text; }
 }
+class ActionDialogue {}
 class OptionDialogue {
     constructor(private options: string[]) {}
     getTitle() { return ""; }
@@ -77,9 +79,44 @@ const npc = {
     getLocation: () => location(3225, 3220),
     getCurrentDefinition: () => ({ getName: () => "Man", getActions: () => ["Talk-to", null, "Attack", "Pickpocket"] }),
 };
-const rival = { getUsername: () => "Agent2", getIndex: () => 2, getLocation: () => location(3223, 3218), getPacketSender: () => ({ sendMessage: () => {} }) };
+const rival = {
+    getUsername: () => "Agent2", getIndex: () => 2, getLocation: () => location(3223, 3218),
+    getArea: () => ({ getName: () => "Wilderness", pluginName: "Wilderness" }),
+    getPrivateArea: () => null, getHitpoints: () => 10, getRunEnergy: () => 100,
+    getPacketSender: () => ({ sendMessage: () => {}, sendTypedMessage: () => {}, getVarbit: () => 0, getVarp: () => 0 }),
+    getSkillManager: () => ({ getCurrentLevel: () => 1, getMaxLevel: () => 1, getExperience: () => 0 }),
+    getInventory: () => ({ getItems: () => [] }), getEquipment: () => ({ getItems: () => [] }),
+};
 const foreignNpc = { ...npc, getIndex: () => 8, getLocation: () => location(3222, 3218), isOwnerOnly: () => true, getOwner: () => rival };
 const tree = { getType: () => 10, getId: () => 1276, getLocation: () => location(3220, 3216) };
+const gangplank = { getType: () => 10, getId: () => 59836, getLocation: () => location(3300, 3300) };
+const deckNpc = {
+    getIndex: () => 9, getId: () => 14959, getLocation: () => location(3224, 3218),
+    getHitpoints: () => 7, getMaxHitpoints: () => 10, getAnimation: () => null,
+    getCurrentDefinition: () => ({ getId: () => 14959, getName: () => "Will", getActions: () => ["Talk-to"] }),
+    isOwnerOnly: () => false, getOwner: () => null,
+};
+const foreignDeckNpc = {
+    ...deckNpc, getIndex: () => 10, isOwnerOnly: () => true, getOwner: () => rival,
+};
+const boats = [
+    { entityIndex: 3000, configId: 9, tileX: 3222, tileY: 3218, level: 0, sizeX: 16, sizeZ: 32,
+        fineX: 412416, fineY: 411904, angle: 1024, heading: 512, moveMode: 1,
+        ownerPlayerId: 1, ownerOnly: false, static: true },
+    { entityIndex: 3001, configId: 1, tileX: 3230, tileY: 3225, level: 0, sizeX: 8, sizeZ: 8,
+        fineX: 413440, fineY: 412800, angle: 0, heading: 0, moveMode: 0,
+        ownerPlayerId: 2, ownerOnly: false, static: false },
+    { entityIndex: 3002, configId: 13, tileX: 3223, tileY: 3218, level: 0, sizeX: 8, sizeZ: 16,
+        fineX: 412544, fineY: 411904, angle: 512, heading: 0, moveMode: 2,
+        ownerPlayerId: 2, ownerOnly: true, static: true },
+    { entityIndex: 3003, configId: 1, tileX: 3300, tileY: 3300, level: 0, sizeX: 8, sizeZ: 8,
+        fineX: 422400, fineY: 422400, angle: 0, heading: 0, moveMode: 0,
+        ownerPlayerId: 2, ownerOnly: false, static: false },
+    { entityIndex: 3004, configId: 1, tileX: 3222, tileY: 3218, level: 1, sizeX: 8, sizeZ: 8,
+        fineX: 412416, fineY: 411904, angle: 0, heading: 0, moveMode: 0,
+        ownerPlayerId: 2, ownerOnly: false, static: false },
+];
+let aboardBoat: any = null;
 const dispatched: any[] = [];
 
 let pluginProfiling = false;
@@ -102,7 +139,17 @@ const connectHeadlessClient = async (username: string) => {
 const advanced: any[] = [];
 const commandRights: string[] = [];
 const loadedMapRegions: any[] = [];
+const routeFlags = new Map<string, number>();
+let observedRoot: any = null;
+let ownerReplacement: any = null;
 const core = {
+    BOAT_VIEW_DISTANCE: 32,
+    BoatManager: {
+        rootLocation: (p: any) => observedRoot ?? p.getLocation(),
+        getBoatAboard: () => aboardBoat,
+        all: () => boats,
+        canSeeBoat: (p: any, boat: any) => !boat.ownerOnly || boat.ownerPlayerId === p.getIndex(),
+    },
     connectHeadlessClient,
     PlayerRights: { NONE: "NONE", DEVELOPER: "DEVELOPER" },
     CanAttackResponse: { CAN_ATTACK: 0, CANT_ATTACK_IN_AREA: 1, 0: "CAN_ATTACK", 1: "CANT_ATTACK_IN_AREA" },
@@ -124,7 +171,11 @@ const core = {
         },
     },
     Location: class { constructor(private x: number, private y: number, private z: number) {} getX() { return this.x; } getY() { return this.y; } getZ() { return this.z; } },
-    RegionManager: { blocked: () => false, loadMapFiles: (x: number, y: number, surroundings: boolean) => loadedMapRegions.push([Math.floor(x / 64), Math.floor(y / 64), surroundings]) },
+    RegionManager: {
+        blocked: () => false,
+        getClipping: (x: number, y: number) => routeFlags.get(`${x},${y}`) ?? 0,
+        loadMapFiles: (x: number, y: number, surroundings: boolean) => loadedMapRegions.push([Math.floor(x / 64), Math.floor(y / 64), surroundings]),
+    },
     ServerPerf: {
         getSummary: (ticks: number) => ({
             ticks, avgTickMs: 12.34567, maxTickMs: 40, avgDriftMs: 0, maxDriftMs: 1, lastTickNumber: 9,
@@ -145,16 +196,25 @@ const core = {
         getProcessCycle: () => Date.now(),
         getPlayerByName: (name: string) => (name.toLowerCase() === "agent1" ? player : name.toLowerCase() === "agent2" ? rival : loadOnline.get(name)),
         getPlayers: () => ({ stream: () => [player, ...loadOnline.values()] }),
-        getNpcsNear: (_location: any, _radius: number, privateArea: any) => privateArea ? [] : [npc, foreignNpc],
+        getNpcsNear: (_location: any, _radius: number, privateArea: any) => privateArea
+            ? (privateArea.boat ? [deckNpc, foreignDeckNpc] : [])
+            : [npc, foreignNpc],
         getNpcs: () => ({ stream: () => [npc, foreignNpc, null], get: (index: number) => (index === 7 ? npc : undefined) }),
         getRemovedObjects: () => [],
         getItems: () => [{ getItem: () => item(526), getPosition: () => location(3223, 3218) }],
     },
     MapObjects: {
-        mapObjects: new Map([["3220,3216,0", [tree]]]),
+        mapObjects: new Map([["3220,3216,0", [tree]], ["3300,3300,0", [gangplank]]]),
         getHash: (x: number, y: number, z: number) => `${x},${y},${z}`,
+        ownerObjectsInScene: (p: any) => p === player && ownerReplacement ? [ownerReplacement] : [],
     },
-    ObjectDefinition: { forPlayer: (id: number) => id === 2284
+    ObjectDefinition: { forPlayer: (id: number) => id === 9090
+        ? ({ id, getName: () => "Player tree", getInteractions: () => ["Chop down"] })
+        : id === 59836
+        ? ({ id, getName: () => "Gangplank", getInteractions: () => ["Board"] })
+        : id === 59576
+        ? ({ id, getName: () => "Helm", getInteractions: () => ["Navigate"] })
+        : id === 2284
         ? ({ id, getName: () => "Plinth", getInteractions: () => null })
         : id === 2283
             ? ({ id, getName: () => "Acid pool", getInteractions: () => [] })
@@ -165,10 +225,12 @@ const core = {
     NpcDefinition: { forId: () => ({ getName: () => "Man" }) },
     MultiChatboxPrompt: { OPTIONS_WIDGET_ID: (219 << 16) | 1, getPending: () => prompt },
     NpcDialogue,
+    ActionDialogue,
     OptionDialogue,
     PlayerDialogue: class {},
     StatementDialogue: class {},
     ItemStatementDialogue: class {},
+    DoubleItemStatementDialogue: class {},
     Bank: {
         MAIN_INTERFACE_ID: 12,
         SIDE_INTERFACE_ID: 15,
@@ -248,6 +310,19 @@ else process.env.AGENT_MCP = previousMcpFlag;
     snapshot = observed.value;
     assert.equal(typeof snapshot.worldTick, "number", "observe exposes a read-only process-cycle counter for timing live mechanics");
     assert.equal(snapshot.x, 3222);
+    assert.deepEqual(snapshot.worldEntities.map((boat: any) => boat.entityIndex), [3000, 3001],
+        "visible same-plane boats only; foreign private/far/other-plane ships stay hidden");
+    assert.deepEqual(snapshot.worldEntities[0], {
+        entityIndex: 3000, configId: 9, x: 3222, y: 3218, z: 0, sizeX: 16, sizeZ: 32,
+        fineX: 412416, fineY: 411904, angle: 1024, heading: 512, moveMode: 1,
+        aboard: false, owner: true,
+    });
+    assert.deepEqual(
+        ["fineX", "fineY", "angle", "heading", "moveMode"]
+            .map((key) => typeof snapshot.worldEntities[0][key]),
+        ["number", "number", "number", "number", "number"],
+        "observe exposes the boat's raw model pose/state for native sailing feedback",
+    );
     assert.deepEqual(snapshot.skills.Woodcutting, { level: 1, max: 1, xp: 0 });
     assert.deepEqual(snapshot.inventory[0], { slot: 0, id: 1351, name: "item 1351", amount: 1 });
     assert.equal(snapshot.npcs.length, 1, "another player’s owned NPC is not a menu target");
@@ -255,7 +330,7 @@ else process.env.AGENT_MCP = previousMcpFlag;
     assert.equal(snapshot.npcs[0].maxHitpoints, 10);
     assert.equal(snapshot.npcs[0].animation, 8082, "boss animations are observable warning cues");
     assert.deepEqual(snapshot.npcs[0].options, ["Talk-to", "Attack", "Pickpocket"]);
-    assert.deepEqual(snapshot.objects, [{ id: 1276, name: "Tree", options: ["Chop down"], x: 3220, y: 3216 }]);
+    assert.deepEqual(snapshot.objects, [{ id: 1276, displayId: 1276, name: "Tree", options: ["Chop down"], x: 3220, y: 3216 }]);
     assert.equal(snapshot.groundItems[0].id, 526);
     assert.deepEqual(snapshot.messages, ["You swing your axe at the tree."]);
     loadedMapRegions.length = 0;
@@ -275,6 +350,36 @@ else process.env.AGENT_MCP = previousMcpFlag;
     assert.equal((await call(client, "observe", { player: "agent1" })).value.npcs[0].id, 10789, "boss style transforms expose their visible ID");
     npc.getCurrentDefinition = originalDefinition;
 
+    // Owner/private overlays replace the base cache loc for the owner, while another player
+    // still sees the base object. Uses the scene tile+type identity, not the loc id.
+    ownerReplacement = { getType: () => 10, getId: () => 9090, getLocation: () => tree.getLocation() };
+    const ownerView = (await call(client, "observe", { player: "agent1" })).value;
+    assert.deepEqual(ownerView.objects.filter((o: any) => o.x === 3220 && o.y === 3216),
+        [{ id: 9090, displayId: 9090, name: "Player tree", options: ["Chop down"], x: 3220, y: 3216 }],
+        "the owner's private replacement hides the base cache loc");
+    const otherView = (await call(client, "observe", { player: "agent2" })).value;
+    assert.deepEqual(otherView.objects.filter((o: any) => o.x === 3220 && o.y === 3216),
+        [{ id: 1276, displayId: 1276, name: "Tree", options: ["Chop down"], x: 3220, y: 3216 }],
+        "another player sees the base cache loc");
+    ownerReplacement = null;
+
+    // A boat deck counts as the main world but its locs still live in the private area.
+    observedPrivateArea = {
+        boat: {},
+        countsAsMainWorld: () => true,
+        getObjects: () => [{ getType: () => 10, getId: () => 59576, getLocation: () => location(3224, 3219) }],
+    };
+    observedRoot = location(3300, 3300);
+    const deck = (await call(client, "observe", { player: "agent1" })).value;
+    assert.ok(deck.objects.some((o: any) => o.name === "Helm"),
+        "boat deck locs are visible to MCP on a deck that counts as the main world");
+    assert.ok(deck.objects.some((o: any) => o.name === "Gangplank" && o.x === 3300 && o.y === 3300),
+        "main-world shore locs are queried around the boat root tile");
+    assert.deepEqual(deck.npcs.map((n: any) => n.name), ["Man", "Will"],
+        "same-deck and main-world NPCs are visible; foreign owner-only deck NPCs stay hidden");
+    observedPrivateArea = null;
+    observedRoot = null;
+
     packetSender.sendGraphic({ getId: () => 1560 }, location(3222, 3218));
     assert.deepEqual((await call(client, "observe", { player: "agent1" })).value.client.graphics, [{ id: 1560, x: 3222, y: 3218, z: 0 }]);
     assert.equal((await call(client, "observe", { player: "agent1" })).value.client.graphics, undefined, "graphics are reported once");
@@ -292,19 +397,52 @@ else process.env.AGENT_MCP = previousMcpFlag;
     };
     const instanced = (await call(client, "observe", { player: "agent1" })).value;
     assert.deepEqual(instanced.objects, [
-        { id: 2280, name: "Tree", options: ["Chop down"], x: 3220, y: 3216 },
-        { id: 2282, name: "Tree", options: ["Chop down"], x: 3224, y: 3219 },
-        { id: 2284, name: "Plinth", options: [], x: 3224, y: 3220 },
-        { id: 48295, name: "Drain", options: ["Enter"], x: 3224, y: 3221 },
-        { id: 2283, name: "Acid pool", options: [], x: 3223, y: 3219 },
+        { id: 2280, displayId: 2280, name: "Tree", options: ["Chop down"], x: 3220, y: 3216 },
+        { id: 2282, displayId: 2282, name: "Tree", options: ["Chop down"], x: 3224, y: 3219 },
+        { id: 2284, displayId: 2284, name: "Plinth", options: [], x: 3224, y: 3220 },
+        { id: 49488, displayId: 48295, name: "Drain", options: ["Enter"], x: 3224, y: 3221 },
+        { id: 2283, displayId: 2283, name: "Acid pool", options: [], x: 3223, y: 3219 },
     ], "private replacements and template scenery are actual menu targets");
     assert.deepEqual(instanced.npcs, [], "world NPCs are hidden in the instance");
     dispatched.length = 0;
     await call(client, "interact", { player: "agent1", target: "Drain", option: "Enter" });
-    assert.deepEqual(dispatched, [{ type: "object_option", id: 48295, x: 3224, y: 3221, action: "Enter" }],
-        "interactions send the visible cache transform ID rather than the inert parent ID");
+    assert.deepEqual(dispatched, [{ type: "object_option", id: 49488, x: 3224, y: 3221, action: "Enter" }],
+        "interactions send the scene object ID while its player transform supplies menu options");
     dispatched.length = 0;
     observedPrivateArea = null;
+
+    // Long-route planning is read-only and flags doors instead of clicking them.
+    const beforePlan = dispatched.length;
+    const planned = (await call(client, "plan_route", { player: "agent1", x: 3422, y: 3218 })).value;
+    assert.equal(planned.result, "planned");
+    assert.ok(planned.waypoints.length > 10, "long walks are broken into minimap-sized steps");
+    assert.equal(dispatched.length, beforePlan);
+    assert.ok((await call(client, "plan_route", { player: "agent1", x: 4000, y: 3218 })).error);
+    observedPrivateArea = {};
+    assert.ok((await call(client, "plan_route", { player: "agent1", x: 3230, y: 3218 })).error);
+    observedPrivateArea = null;
+    // Confine a corridor so the planner must identify the closed gate crossing.
+    for (let x = 3150; x <= 3300; x++) {
+        for (let y = 3150; y <= 3290; y++) if (y !== 3218) routeFlags.set(`${x},${y}`, 0x200000);
+    }
+    routeFlags.set("3225,3218", 0x80);
+    const gate = { getId: () => 1535, getLocation: () => location(3225, 3218) };
+    core.MapObjects.mapObjects.set("3225,3218,0", [gate] as any);
+    const originalForPlayer = core.ObjectDefinition.forPlayer;
+    core.ObjectDefinition.forPlayer = (id: number) => id === 1535
+        ? { id, getName: () => "Door", getInteractions: () => ["Open"] }
+        : originalForPlayer(id);
+    const doorPlan = (await call(client, "plan_route", { player: "agent1", x: 3230, y: 3218 })).value;
+    assert.ok(doorPlan.waypoints.some((point: any) => point.door && point.doors.some((door: any) => door.id === 1535)));
+    const exactPlan = (await call(client, "plan_route", { player: "agent1", x: 3230, y: 3218, exact: true })).value;
+    assert.deepEqual(exactPlan.waypoints.at(-1), { x: 3230, y: 3218, z: 0 }, "a requested stand tile is reached exactly");
+    routeFlags.set("3230,3218", 0x200000);
+    const blockedStand = (await call(client, "plan_route", { player: "agent1", x: 3230, y: 3218, exact: true })).value;
+    assert.equal(blockedStand.result, "no-route", "an unreachable stand tile cannot succeed on the wrong side of a wall");
+    assert.equal(dispatched.length, beforePlan, "planning never moves or opens a quest gate");
+    core.ObjectDefinition.forPlayer = originalForPlayer;
+    core.MapObjects.mapObjects.delete("3225,3218,0");
+    routeFlags.clear();
 
     // The mock player never moves, so a walk elsewhere reports stuck and a walk to its own tile arrives.
     assert.equal((await call(client, "walk_to", { player: "agent1", x: 3230, y: 3230, run: true })).value.result, "stuck");
@@ -369,6 +507,17 @@ else process.env.AGENT_MCP = previousMcpFlag;
     const chose = (await call(client, "dialogue_choose", { player: "agent1", option: "no" })).value;
     assert.equal(chose.chose, "No thanks.");
     assert.equal(chose.dialogue, null);
+
+    // Internal actions own their continuation; a forged click must not cancel their callback.
+    dialogueManager.dialogues.set(2, new ActionDialogue());
+    dialogueManager.index = 2;
+    const beforeAutomaticClick = dispatched.length;
+    const automatic = await call(client, "dialogue_continue", { player: "agent1" });
+    assert.ok(automatic.error && automatic.text.includes("wait_ticks"));
+    assert.equal(dialogueManager.index, 2);
+    assert.equal(dispatched.length, beforeAutomaticClick);
+    dialogueManager.dialogues.delete(2);
+    dialogueManager.index = -1;
 
     // Plugin menus (sendMultiChatboxPrompt) are answered with a resume on the options widget.
     prompt = { title: "Select an Option", options: ["Who are you?", "Nothing."] };

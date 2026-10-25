@@ -20,6 +20,7 @@ module.exports = function registerBelowIceMountainQuest(api) {
     Graphic,
     HitDamage,
     HitMask,
+    Item,
     ItemIdentifiers,
     Location,
     NpcIdentifiers,
@@ -178,8 +179,8 @@ module.exports = function registerBelowIceMountainQuest(api) {
   const ACTION_BAG_RUMMAGE = "zy3NHn";
   const ACTION_DOORS_OPEN = "D1Y7Rh";
   const ACTION_RAMARNO_DEPARTS = "i5wpmS";
-  // Wiki "unavailable"/"{{tact|...}}" markers whose branch should simply carry on.
-  const BRANCH_CONTINUE_IDS = new Set(["W0vwlg", "bEqDuA", "_siJEW"]);
+  // Mid-scene markers whose branch should simply carry on.
+  const BRANCH_CONTINUE_IDS = new Set(["W0vwlg", "KNloP7", "_siJEW"]);
   const DIALOGUE_STEP_IDS = new Set([
     ACTION_TRAIN_START,
     ACTION_FLEX_UNLOCK,
@@ -330,6 +331,20 @@ module.exports = function registerBelowIceMountainQuest(api) {
     return memberState(player, CHECKAL_ATTRIBUTE) >= MEMBER_RECRUITED
       && memberState(player, MARLEY_ATTRIBUTE) >= MEMBER_RECRUITED
       && memberState(player, BURNTOF_ATTRIBUTE) >= MEMBER_RECRUITED;
+  }
+
+  /**
+   * The last/not-last lines are resolved before the speaker's own state moves to
+   * 40, so ask whether everyone *else* is already recruited.
+   */
+  function finalRecruit(player, npcId) {
+    const current = npcId === CHECKAL_NPC_ID ? CHECKAL_ATTRIBUTE
+      : npcId === MARLEY_NPC_ID ? MARLEY_ATTRIBUTE
+      : npcId === BURNTOF_NPC_ID || npcId === BURNTOF_2_NPC_ID ? BURNTOF_ATTRIBUTE
+      : null;
+    if (!current) return false;
+    return [CHECKAL_ATTRIBUTE, MARLEY_ATTRIBUTE, BURNTOF_ATTRIBUTE]
+      .every((attribute) => attribute === current || memberState(player, attribute) >= MEMBER_RECRUITED);
   }
 
   function moveTo(player, tile) {
@@ -520,11 +535,11 @@ module.exports = function registerBelowIceMountainQuest(api) {
       case CONDITION_NOT_LAST_RECRUIT:
       case CONDITION_BURNTOF_NOT_LAST:
       case CONDITION_MARLEY_NOT_LAST:
-        return !allRecruited(player);
+        return !finalRecruit(player, npcId);
       case CONDITION_LAST_RECRUIT:
       case CONDITION_BURNTOF_LAST:
       case CONDITION_MARLEY_LAST:
-        return allRecruited(player);
+        return finalRecruit(player, npcId);
       case CONDITION_BURNTOF_NO_DRINK:
       case CONDITION_BURNTOF_NO_DRINK_AGAIN:
         return !hasAlcohol(player);
@@ -597,20 +612,9 @@ module.exports = function registerBelowIceMountainQuest(api) {
   function handleAtlasTalk(event) {
     const { player } = event;
     const variant = selectAtlasVariant(player);
-    if (!variant || !attrFlag(player, ATLAS_DECLINED_ATTRIBUTE) && attrFlag(player, ATLAS_SESSIONS_ATTRIBUTE) < 2) return false;
+    if (!variant) return false;
     event.handled = true;
-    const records = require("../QuestRuntime").loadTranscripts(api)[PAGE].variants;
-    if (attrFlag(player, ATLAS_SESSIONS_ATTRIBUTE) === 0) {
-      startTranscript(api, player, ATLAS_NPC_ID, PAGE, "checkal-the-strongman-talking-to-atlas", (steps) => [
-        { type: "line", speaker: "Atlas", text: "You're back. Would you like to start that training session now?" }, steps.at(-1),
-      ]);
-    } else {
-      const repeatMenu = records["checkal-the-strongman-talking-to-atlas-again-after-first-training-session"].find((step) => step.type === "choice");
-      startTranscript(api, player, ATLAS_NPC_ID, PAGE, variant, (steps) => [
-        ...steps.filter((step) => step.type !== "choice" && step.type !== "action"), repeatMenu,
-      ]);
-    }
-    return true;
+    return startTranscript(api, player, ATLAS_NPC_ID, PAGE, variant);
   }
 
   function handleStageChanged({ player, key }) {
@@ -977,6 +981,7 @@ module.exports = function registerBelowIceMountainQuest(api) {
     training.set(player, scene);
     player.setAttribute(TRAINING_ATTRIBUTE, 1);
     scene.enter(player);
+    player.moveTo(scene.sourceTile(3253, 3393));
     player.getMovementQueue().reset().setBlockMovement(true);
     player.setUntargetable(true);
     player.getPacketSender().sendInterfaceRemoval();
@@ -1667,8 +1672,10 @@ module.exports = function registerBelowIceMountainQuest(api) {
   }
 
   function grantReward(player) {
-    // registerQuest hands out one coin with the scroll; the bag holds 2,000.
-    player.getInventory().adds(COINS_ITEM_ID, 1999);
+    // registerQuest supplies the final coin; the bag holds the other 1,999. Coins
+    // stack, so forceAdd merges into an existing stack or drops the overflow at the
+    // reward tile instead of losing it to a full inventory.
+    player.getInventory().forceAdd(player, new Item(COINS_ITEM_ID, 1999));
   }
 
   function syncBootstrap({ player }) { syncVariables(player); }

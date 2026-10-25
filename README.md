@@ -30,8 +30,11 @@ Create a server token at [RSPS.app](https://rsps.app/) under **Settings → Serv
 
 ```dotenv
 WEBRTC_WORLD_ID=my-world
+WEBRTC_WORLD_NAME=My World
 WEBRTC_WORLD_TOKEN=paste-your-token-here
 ```
+
+`WEBRTC_WORLD_NAME` is the name shown in the World list; it defaults to `WEBRTC_WORLD_ID`. The list also shows the `description` (up to 120 characters) and `spawn` from [`server/data/definitions/world.json`](server/data/definitions/world.json).
 
 Run `yarn start`. Your world appears in the World list once it registers. Keep the token private.
 
@@ -43,7 +46,7 @@ Run `yarn start`. Your world appears in the World list once it registers. Keep t
 
 ## Credits
 
-We want to thank Astrul, Detuks, Vexus and all the contributors of both the legacy Java project and the TypeScript continuation.
+We want to thank Astrul/@Lerl, Detuks/@Reinismu, @xrsps, Vexus/@bandithaxx and all the contributors of both the legacy Java project and the TypeScript continuation.
 
 ## Legal
 

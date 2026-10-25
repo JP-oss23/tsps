@@ -1,3 +1,4 @@
+import { ClientState } from "../../game/ClientState";
 import { MenuTargetType } from "../../rs/MenuEntry";
 import { applyMenuTransform } from "../../ui/menu/menuTransforms";
 import { isDropTarget, isPauseButton, shouldShowMenuOption } from "../WidgetFlags";
@@ -103,6 +104,7 @@ function hasVisibleModelContent(w: any): boolean {
 function hasVisibleInventoryContent(w: any): boolean {
     if (typeof w?.itemId === "number" && (w.itemId | 0) >= 0) return true;
     if (!Array.isArray(w?.itemIds)) return false;
+    // Cache `itemIds` arrays use itemId+1; 0 is their empty sentinel.
     return w.itemIds.some((itemId: unknown) => typeof itemId === "number" && (itemId | 0) > 0);
 }
 
@@ -164,6 +166,21 @@ export function getVisibleWidgetSurfaceReason(w: any): string | undefined {
 }
 
 // Best-effort plain-text target label for a widget: prefer opBase, then dataText, name, text.
+/**
+ * Whether a widget's visible surface covers a screen point. A text widget only covers the text
+ * the renderer drew, so the rest of its box (a buff timer's spans the whole screen) and text
+ * that wasn't drawn are see-through.
+ */
+export function isVisibleWidgetSurfaceAt(w: any, x: number, y: number): boolean {
+    if (!getVisibleWidgetSurfaceReason(w)) return false;
+    if (w.type === 4 || w.type === 8) {
+        const bounds = w._textBounds;
+        return !!bounds && x >= bounds.x && x < bounds.x + bounds.width &&
+            y >= bounds.y && y < bounds.y + bounds.height;
+    }
+    return true;
+}
+
 export function getWidgetTargetLabel(w: any): string {
     if (w && (w as any).__dummyRoot) return ""; // never surface synthetic root ids
     // Check opBase first - CS2 scripts set this for spells via if_setopbase.
@@ -242,7 +259,7 @@ export function transformWidgetMenuEntries<T extends { option: string }>(
 ): T[] {
     const itemId = typeof w?.itemId === "number" ? w.itemId | 0 : -1;
     const uid = typeof w?.uid === "number" ? w.uid | 0 : 0;
-    if (itemId <= 0 || uid >>> 16 !== INVENTORY_GROUP_ID) {
+    if (itemId < 0 || uid >>> 16 !== INVENTORY_GROUP_ID) {
         return applyMenuTransform(entries as any, { surface: "widget", menu, widgetId: uid,
             childIndex: w?.childIndex ?? -1, itemId }) as unknown as T[];
     }
@@ -254,14 +271,42 @@ export function transformWidgetMenuEntries<T extends { option: string }>(
     }) as unknown as T[];
 }
 
+/** Target mask bits a selection needs to land on an inventory item (item or component use). */
+const SELECTION_TARGETS_ITEM_MASK = 0x30;
+
+/**
+ * While an item ("Use") or spell is selected, an inventory item offers only the selection's
+ * entry - "Use Knife -> Logs", "Cast High Level Alchemy -> Logs" - and Cancel, in place of its
+ * own ops. Undefined when nothing is selected or the widget is not a target.
+ */
+export function getSelectionTargetEntries(w: any): SimpleMenuEntry[] | undefined {
+    if (!ClientState.isSpellSelected) return undefined;
+    if (typeof w?.itemId !== "number" || w.itemId < 0) return undefined;
+    if ((ClientState.selectedSpellTargetMask & SELECTION_TARGETS_ITEM_MASK) === 0) return undefined;
+    const plainTarget = getWidgetTargetLabel(w);
+    if (!plainTarget) return undefined;
+    const action = sanitizeText(ClientState.selectedSpellActionName) ?? "Cast";
+    const selected = ClientState.selectedSpellName || "";
+    const itemTarget = `${colorStartTag(ITEM_MENU_TARGET_RGB)}${plainTarget}`;
+    return [
+        { option: action, target: selected ? `${selected} -> ${itemTarget}` : itemTarget, opIndex: 0 },
+        { option: "Cancel" },
+    ];
+}
+
 /** A widget's menu entries in OSRS display order, after client plugins' reordering. */
 export function deriveMenuEntriesForWidget(
     w: any,
     onlyBasic?: boolean,
     getWidgetFlags?: (w: any) => number,
     getWidgetByUid?: (uid: number) => any,
+    getWidgetOpMask?: (w: any) => number,
 ): SimpleMenuEntry[] {
-    const entries = deriveRawMenuEntriesForWidget(w, onlyBasic, getWidgetFlags, getWidgetByUid);
+    if (!onlyBasic) {
+        const selectionEntries = getSelectionTargetEntries(w);
+        if (selectionEntries) return selectionEntries;
+    }
+    const entries = deriveRawMenuEntriesForWidget(w, onlyBasic, getWidgetFlags, getWidgetByUid, getWidgetOpMask);
     return onlyBasic ? entries : transformWidgetMenuEntries(w, entries);
 }
 
@@ -271,6 +316,7 @@ export function deriveRawMenuEntriesForWidget(
     onlyBasic?: boolean,
     getWidgetFlags?: (w: any) => number,
     getWidgetByUid?: (uid: number) => any,
+    getWidgetOpMask?: (w: any) => number,
 ): SimpleMenuEntry[] {
     const entries: SimpleMenuEntry[] = [];
     if (onlyBasic) {
@@ -284,17 +330,19 @@ export function deriveRawMenuEntriesForWidget(
     // Get widget flags for transmit checks
     const flags =
         typeof getWidgetFlags === "function" ? getWidgetFlags(w) | 0 : (w?.flags ?? 0) | 0;
+    // Transmit bits for ops 11-32 (IF_SETEVENTS_V2).
+    const opMask = typeof getWidgetOpMask === "function" ? getWidgetOpMask(w) | 0 : 0;
     const targetMask = (flags >>> 11) & 0x3f;
     const verb = getWidgetTargetVerb(w, targetMask);
 
     // Check if widget has onOp handler (either new or old style)
-    const hasOnOpHandler = !!(w?.onOp || w?.eventHandlers?.onOp);
+    const hasOnOpHandler = !!(w?.onOp || w?.eventHandlers?.onOp || w?.jsListeners?.onOp);
 
     // inventory/container item menus treat targetVerb ("Use") as its own entry,
     // not as a placeholder that fills empty action slots. Filling null action slots causes
     // "Use" to appear above the primary item action (e.g., Staff of air: Use, Wield, ...),
     // which is incorrect (should be Wield, Use, ...).
-    const hasItem = typeof w?.itemId === "number" && w.itemId > 0;
+    const hasItem = typeof w?.itemId === "number" && w.itemId >= 0;
     const itemTarget =
         hasItem && plainTarget
             ? `${colorStartTag(ITEM_MENU_TARGET_RGB)}${plainTarget}`
@@ -306,7 +354,7 @@ export function deriveRawMenuEntriesForWidget(
             const p = sanitizeText(actions[i]);
             // Only include action if transmit flag is set OR widget has onOp handler
             // Action flag and onOp check
-            if (p && shouldShowMenuOption(flags, i, hasOnOpHandler)) {
+            if (p && shouldShowMenuOption(flags, i, hasOnOpHandler, opMask)) {
                 ops.push({ text: p, index: i });
             }
         }
@@ -338,7 +386,7 @@ export function deriveRawMenuEntriesForWidget(
         for (let i = 0; i < actions.length; i++) {
             const p = sanitizeText(actions[i]);
             // Only include action if transmit flag is set OR widget has onOp handler
-            if (shouldShowMenuOption(flags, i, hasOnOpHandler)) {
+            if (shouldShowMenuOption(flags, i, hasOnOpHandler, opMask)) {
                 if (p) ops.push({ text: p, index: i });
                 else if (verb) ops.push({ text: verb, index: -1 });
             }
@@ -837,7 +885,7 @@ export function findBlockingWidgetInHits(
         const hasTransmitOps = (flags & 0x7fe) !== 0;
         const hasSpellAction =
             targetMask > 0 && !!sanitizeText(w?.spellActionName ?? w?.targetVerb);
-        const hasItem = typeof w?.itemId === "number" && (w.itemId | 0) > 0;
+        const hasItem = typeof w?.itemId === "number" && (w.itemId | 0) >= 0;
         const isPauseWidget = isPauseButtonWidget(w, getWidgetFlags, getWidgetByUid);
         const isDraggable = !!(w?.isDraggable || w?.eventHandlers?.onDrag || w?.onDrag);
         const buttonType = (w?.buttonType ?? 0) | 0;

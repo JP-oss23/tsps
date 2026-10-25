@@ -14,6 +14,7 @@ import { DamageFormulas } from "../formula/DamageFormulas";
 import type { SpecialDamageBounds } from "../CombatFactory";
 import type { WeaponSpecialTraits } from "../WeaponSpecialTraits";
 import type { CombatSpell } from "../magic/CombatSpell";
+import { Spell, SpellCastContext } from "../magic/Spell";
 
 type PendingHitConfig = {
     delay?: number;
@@ -22,6 +23,12 @@ type PendingHitConfig = {
     rollAccuracy?: boolean;
     /** False for damage that pays its own XP (or none), skipping the usual combat XP. */
     experience?: boolean;
+    /** A pre-rolled damage value, still passing through damage hooks and the HP cap. */
+    damage?: number;
+    /** Already-mitigated scripted damage may bypass ordinary protection prayers. */
+    bypassProtectionPrayer?: boolean;
+    /** Shared across one attack's hits on the same victim; applied after queue-time modifiers. */
+    damageBudget?: { remaining: number };
 };
 
 export class PendingHit {
@@ -35,14 +42,18 @@ export class PendingHit {
     private accurate: boolean;
     private handleAfterHitEffects: boolean;
     private experience = true;
+    private damageBudget?: { remaining: number };
     /** Optional per-hitsplat extra reveal delays (from `hitDelayTicks`). */
     private hitDelays?: number[];
     /** Spell selected when this hit was launched; the caster may clear it before impact. */
     private spell: CombatSpell | null = null;
     /** A roll hook (Verac's set) let this hit through protection prayers. */
     private protectionBypassed = false;
+    /** Index of the `firstSuccessfulAccuracyDamageRanges` branch that landed; -1 when every roll missed. */
+    private firstSuccessfulRangeIndex: number | undefined;
 
-    constructor(attacker: Mobile, target: Mobile, method: CombatMethod, delayOrConfig?: number | PendingHitConfig, handleAfterHitEffects?: boolean) {
+    constructor(attacker: Mobile, target: Mobile, method: CombatMethod, delayOrConfig?: number | PendingHitConfig, handleAfterHitEffects?: boolean,
+        private readonly spellContext: SpellCastContext | null = null) {
         this.attacker = attacker;
         this.target = target;
         this.method = method;
@@ -59,6 +70,7 @@ export class PendingHit {
                 resolvedHandleAfterHitEffects = handleAfterHitEffects;
             }
         } else if (delayOrConfig && typeof delayOrConfig === "object") {
+            this.damageBudget = delayOrConfig.damageBudget;
             if (Number.isInteger(delayOrConfig.delay)) {
                 resolvedDelay = delayOrConfig.delay as number;
             }
@@ -76,7 +88,10 @@ export class PendingHit {
             }
         }
 
-        this.hits = this.prepareHits(resolvedHitAmount, resolvedRollAccuracy);
+        this.hits = Spell.withCastContext(attacker, this.spellContext, () =>
+            this.prepareHits(resolvedHitAmount, resolvedRollAccuracy,
+                typeof delayOrConfig === "object" ? delayOrConfig?.damage : undefined,
+                typeof delayOrConfig === "object" && delayOrConfig?.bypassProtectionPrayer === true));
         this.delay = Math.max(0, resolvedDelay);
         this.handleAfterHitEffects = resolvedHandleAfterHitEffects;
     }
@@ -96,6 +111,7 @@ export class PendingHit {
     public getSpell(): CombatSpell | null {
         return this.spell;
     }
+    public getSpellContext(): SpellCastContext | null { return this.spellContext; }
 
     public setSpell(spell: CombatSpell | null): PendingHit {
         this.spell = spell;
@@ -114,9 +130,24 @@ export class PendingHit {
         return this.totalDamage;
     }
 
+    public capDamageToBudget(): void {
+        if (!this.damageBudget) return;
+        for (const damage of this.hits) {
+            const value = Math.max(0, Math.min(damage.getDamage(), this.damageBudget.remaining));
+            damage.setDamage(value);
+            this.damageBudget.remaining -= value;
+        }
+        this.updateTotalDamage();
+    }
+
     /** Whether the attacker gets the usual combat XP for this hit. */
     public rewardsExperience(): boolean {
         return this.experience;
+    }
+
+    /** The branch of a first-successful-roll special that landed (0-based), -1 if all rolls missed, undefined if not such a special. */
+    public getFirstSuccessfulRangeIndex(): number | undefined {
+        return this.firstSuccessfulRangeIndex;
     }
 
     public isAccurate(): boolean {
@@ -149,7 +180,7 @@ export class PendingHit {
         return this.hitDelays;
     }
 
-    private prepareHits(hitAmount: number, rollAccuracy: boolean): HitDamage[] {
+    private prepareHits(hitAmount: number, rollAccuracy: boolean, fixedDamage?: number, bypassProtectionPrayer = false): HitDamage[] {
         // Check the hit amounts.
         if (hitAmount > 4) {
             throw new Error(
@@ -165,7 +196,7 @@ export class PendingHit {
 
         // Utility-only specials (e.g. stat boosts that resolve outside the hit
         // pipeline) declare skipAttack and produce no hitsplat.
-        const traits = CombatSpecial.activeTraitsFor(this.attacker);
+        const traits = fixedDamage === undefined ? CombatSpecial.activeTraitsFor(this.attacker) : null;
         if (traits?.skipAttack === true) {
             this.totalDamage = 0;
             return [];
@@ -197,7 +228,7 @@ export class PendingHit {
         };
 
         if (hitAmount === 1) {
-            const roll = { attacker: this.attacker, target: this.target, combatType: this.combatType, forceAccurate: false, forceMaxHit: false, bypassProtectionPrayer: false };
+            const roll = { attacker: this.attacker, target: this.target, combatType: this.combatType, forceAccurate: false, forceMaxHit: false, bypassProtectionPrayer };
             PluginManager.emitCombatHitRoll(roll);
             if (roll.bypassProtectionPrayer) this.protectionBypassed = true;
             const resolved = PendingHit.withForcedMax(this.rollSpecialTraits(traits, roll.forceAccurate, rollAccuracy, 0), roll.forceMaxHit);
@@ -205,7 +236,13 @@ export class PendingHit {
             const damage: HitDamage = this.accurate
                 ? ServerPerf.measurePhase(
                     "combat.process.method_hits.damage",
-                    () => CombatFactory.getHitDamage(this.attacker, this.target, this.combatType, roll.bypassProtectionPrayer, resolved.bounds)
+                    () => CombatFactory.getHitDamage(this.attacker, this.target, this.combatType, roll.bypassProtectionPrayer,
+                        fixedDamage === undefined ? resolved.bounds : {
+                            minimumMultiplier: 0,
+                            maximumMultiplier: 0,
+                            minimumBonus: fixedDamage,
+                            maximumBonus: fixedDamage,
+                        }, fixedDamage === undefined)
                 )
                 : new HitDamage(0, HitMask.BLUE);
             if (this.accurate && this.attacker.isPlayer() && this.target.isPlayer()) {
@@ -218,7 +255,7 @@ export class PendingHit {
         }
 
         if (traits?.firstSuccessfulAccuracyDamageRanges?.length) {
-            const resolvedBranch = this.resolveFirstSuccessfulRanges(traits, capToRemaining);
+            const resolvedBranch = this.resolveFirstSuccessfulRanges(traits, capToRemaining, bypassProtectionPrayer);
             if (resolvedBranch) {
                 return resolvedBranch;
             }
@@ -228,7 +265,7 @@ export class PendingHit {
         let firstAccurate: boolean | undefined;
         let firstBounds: SpecialDamageBounds | undefined;
         for (let i = 0; i < hits.length; i++) {
-            const roll = { attacker: this.attacker, target: this.target, combatType: this.combatType, forceAccurate: false, forceMaxHit: false, bypassProtectionPrayer: false };
+            const roll = { attacker: this.attacker, target: this.target, combatType: this.combatType, forceAccurate: false, forceMaxHit: false, bypassProtectionPrayer };
             PluginManager.emitCombatHitRoll(roll);
             if (roll.bypassProtectionPrayer) this.protectionBypassed = true;
             let resolved: { accurate: boolean; bounds?: SpecialDamageBounds };
@@ -347,7 +384,8 @@ export class PendingHit {
      */
     private resolveFirstSuccessfulRanges(
         traits: WeaponSpecialTraits,
-        capToRemaining: (damage: HitDamage) => HitDamage
+        capToRemaining: (damage: HitDamage) => HitDamage,
+        bypassProtectionPrayer = false
     ): HitDamage[] | null {
         const ranges = traits.firstSuccessfulAccuracyDamageRanges ?? [];
         if (ranges.length === 0) {
@@ -371,7 +409,8 @@ export class PendingHit {
                 maximumMultiplier: range.maximumDamageMultiplier,
                 reduction: range.maximumDamageReduction ?? 0,
             };
-            const base = CombatFactory.getHitDamage(this.attacker, this.target, this.combatType, false, bounds).getDamage();
+            const base = CombatFactory.getHitDamage(this.attacker, this.target, this.combatType, bypassProtectionPrayer, bounds).getDamage();
+            if (bypassProtectionPrayer) this.protectionBypassed = true;
             const distributed = range.distributeDamage?.(base, hitCount);
             const hits: HitDamage[] = [];
             let total = 0;
@@ -387,9 +426,11 @@ export class PendingHit {
             }
             this.accurate = total > 0;
             this.totalDamage = total;
+            this.firstSuccessfulRangeIndex = attempt;
             return hits;
         }
 
+        this.firstSuccessfulRangeIndex = -1;
         const patterns = traits.allMissDamagePatterns;
         const fallbackRoll = Math.random();
         const pattern = patterns && patterns.length > 0

@@ -1,7 +1,7 @@
 "use strict";
 
 const H = { api: null, core: null, data: null, tick: 0, players: new Set(), traps: new Set(), actions: new Map(), reserved: new Map(), hidden: new Map() };
-const ANIM = Object.freeze({ SET: 5208, TAKE: 5207, SMALL: 5212, NET: 6605, OLD_NET: 6606, BUTTERFLY: 5209, HANDS: 782, FALCON: 5162, NOOSE: 5255, TEASE: 5236, JUMP: 3067, BIRDHOUSE: 7057, BIRDHOUSE_IMCANDO: 8916, KICK: 423, PICKUP: 827, HERBI_APPEAR: 7687, HERBI_STUN: 7688, HERBI_BURROW: 7690, CAT_FALL: 5234, ANTELOPE_FALL: 10928 });
+const ANIM = Object.freeze({ SET: 5208, TAKE: 5207, SMALL: 5212, NET: 6605, OLD_NET: 6606, BUTTERFLY: 5209, HANDS: 782, IMPLING_HANDS: 7171, IMPLING_CAUGHT: 6615, FALCON: 5162, NOOSE: 5255, TEASE: 5236, JUMP: 3067, BIRDHOUSE: 7057, BIRDHOUSE_IMCANDO: 8916, KICK: 423, PICKUP: 827, HERBI_APPEAR: 7687, HERBI_STUN: 7688, HERBI_BURROW: 7690, CAT_FALL: 5234, ANTELOPE_FALL: 10928 });
 
 function level(player, skill = H.core.Skill.HUNTER) {
   return player.getSkillManager().getCurrentLevel(skill);
@@ -207,6 +207,9 @@ function removeObject(object) {
 }
 
 function ownsClue(player, tier) {
+  const request = { player, tier, allowed: null };
+  H.api?.emitCustomEvent?.("treasure-trails:can-receive", request);
+  if (typeof request.allowed === "boolean") return !request.allowed;
   const names = [`Clue scroll (${tier.toLowerCase()})`, `Clue bottle (${tier.toLowerCase()})`,
     `Clue nest (${tier.toLowerCase()})`, `Scroll box (${tier.toLowerCase()})`];
   const contains = container => container?.getItems?.().some(item => item?.getAmount() > 0

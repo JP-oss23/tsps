@@ -56,6 +56,7 @@ export enum ClientPacketId {
     IF_TRIGGEROPLOCAL = 30, // IF_TRIGGEROPLOCAL (var-short)
     IF_BUTTONT = 90, // Widget target on widget (16 bytes)
     IF_BUTTON_SUB = 89, // Interface button via op submenu (10 bytes)
+    IF_BUTTONX = 91, // Interface button with its op index, for ops 11-32 (9 bytes)
 
     // Movement
     MOVE_GAMECLICK = 16, // Walk/Move (7 bytes)
@@ -92,7 +93,15 @@ export enum ClientPacketId {
     RESUME_PAUSEBUTTON = 62, // Dialog continue (6 bytes)
 
     // Sailing: one of the 16 helm headings (0-15), sent instead of a walk while steering
-    SET_HEADING = 214, // (1 byte)
+    SET_HEADING = 214,
+
+    // World entity (static ship / boat) options, as live OSRS sends them
+    OPWORLDENTITY6 = 225,
+    OPWORLDENTITY5 = 224,
+    OPWORLDENTITY2 = 221,
+    OPWORLDENTITY4 = 223,
+    OPWORLDENTITY3 = 222,
+    OPWORLDENTITY1 = 220,
 }
 
 /**
@@ -153,9 +162,16 @@ export const CLIENT_PACKET_LENGTHS: Record<number, number> = {
     [ClientPacketId.OPLOCU]: 15,
     [ClientPacketId.IF_BUTTONT]: 16,
     [ClientPacketId.IF_BUTTON_SUB]: 10,
+    [ClientPacketId.IF_BUTTONX]: 9,
     [ClientPacketId.OPLOC_T_ALT]: 15,
     [ClientPacketId.OPOBJ1]: 7,
     [ClientPacketId.OPOBJ3]: 7,
+    [ClientPacketId.OPWORLDENTITY1]: 3,
+    [ClientPacketId.OPWORLDENTITY2]: 3,
+    [ClientPacketId.OPWORLDENTITY3]: 3,
+    [ClientPacketId.OPWORLDENTITY4]: 3,
+    [ClientPacketId.OPWORLDENTITY5]: 3,
+    [ClientPacketId.OPWORLDENTITY6]: 2,
 };
 
 /**

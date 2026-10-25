@@ -162,8 +162,14 @@ export type NpcView = Tile & ActorUpdateView & {
   faceTile?: { x: number; y: number };
   /** Body-model slot overrides (OSRS npc model customisation); an empty list resets them. */
   modelCustomisation?: { slot: number; modelId: number }[];
+  /** Stand / walk / turn sequence overrides (0 idle, 1 walk, 2 turn left, 3 turn right); an empty list resets them. */
+  baseAnimations?: { slot: number; seqId: number }[];
+  /** A fade of its model (OSRS npc transparency): `from` (-1 its current look) to `to`, 0 opaque to 255 invisible. */
+  transparency?: { startCycles: number; endCycles: number; from: number; to: number };
   /** Its walk step is sent as a crawl (half walking speed on the client). */
   crawl?: boolean;
+  /** The boat/static ship this NPC stands on (its deck) rather than the main world. */
+  worldView?: number;
   rotation: number;
   walkDirection: number;
   runDirection: number;
@@ -175,6 +181,7 @@ export type NpcSyncState = {
   typeIds: Map<number, number>;
   headIcons: Map<number, number>;
   interactionIndices: Map<number, number>;
+  worldViews: Map<number, number>;
 };
 
 export type ProjectileView = {
@@ -254,10 +261,12 @@ export type ClientMessage =
   | { type: "move"; worldX: number; worldY: number; modifierFlags: number; run?: boolean }
   | { type: "npc_option"; index: number; clickType: number }
   | { type: "object_option"; id: number; x: number; y: number; clickType?: number; action?: string }
-  | { type: "chat"; text: string; messageType: "public" | "game" | "friends_chat" }
+  | { type: "world_entity_option"; index: number; clickType: number }
+  | { type: "chat"; text: string; messageType: "public" | "game" | "friends_chat"; autoChat?: boolean }
   | { type: "friends_chat_action"; action: FriendsChatAction }
   | { type: "private_message"; recipient: string; text: string }
   | { type: "chat_filter"; publicMode: number; privateMode: number; tradeMode: number }
+  | { type: "report_abuse"; name: string; ruleId: number; mute: boolean }
   | { type: "widget_action"; widgetId: number; groupId: number; childId: number; buttonNum?: number; opId?: number; option?: string; target?: string; slot?: number; itemId?: number; subOpId?: number; simple?: boolean }
   | { type: "widget"; action: "open" | "close"; groupId: number; modal?: boolean }
   | { type: "widget_target"; targetWidgetId: number; targetSlot: number; targetItemId: number; sourceWidgetId: number; sourceSlot: number; sourceItemId: number }
@@ -402,6 +411,9 @@ function clientPacketLength(opcode: number): number | undefined {
   return CLIENT_PACKET_LENGTHS[opcode as keyof typeof CLIENT_PACKET_LENGTHS]
     ?? NATIVE_CLIENT_PACKET_LENGTHS[opcode];
 }
+
+/** The CHAT packet's kind byte for public autochat (0 public, 1 game, 2 friends chat). */
+const CHAT_KIND_AUTOCHAT = 3;
 
 export function decodeClientPackets(frame: Buffer): ClientMessage[] {
   const messages: ClientMessage[] = [];
@@ -616,6 +628,15 @@ export function decodeClientPacket(frame: Buffer): ClientMessage {
         y: reader.short(),
         spellItemId: (reader.byte(), reader.shortAddLE()),
       };
+    case NativeClientPacket.IF_BUTTONX: {
+      // Ops 11-32 carry their op index (live OSRS: a bank item's Examine is IF_BUTTONX op=11).
+      const widgetId = reader.int(), slot = reader.short(), itemId = reader.signedShort();
+      return {
+        type: "widget_action", widgetId, groupId: widgetId >>> 16, childId: widgetId & 0xffff,
+        buttonNum: reader.byte(), slot: slot === 0xffff ? undefined : slot,
+        itemId: itemId >= 0 ? itemId : undefined,
+      };
+    }
     case NativeClientPacket.IF_BUTTON1:
     case NativeClientPacket.IF_BUTTON2:
     case NativeClientPacket.IF_BUTTON3:
@@ -641,6 +662,31 @@ export function decodeClientPacket(frame: Buffer): ClientMessage {
     }
     case NativeClientPacket.SET_HEADING:
       return { type: "set_heading", heading: reader.byte() & 15 };
+    case NativeClientPacket.OPWORLDENTITY1: {
+      const index = reader.shortLE();
+      reader.byteSub();
+      return { type: "world_entity_option", index, clickType: 1 };
+    }
+    case NativeClientPacket.OPWORLDENTITY2: {
+      const index = reader.shortAdd();
+      reader.byteAdd();
+      return { type: "world_entity_option", index, clickType: 2 };
+    }
+    case NativeClientPacket.OPWORLDENTITY3: {
+      const index = reader.short();
+      reader.byteNeg();
+      return { type: "world_entity_option", index, clickType: 3 };
+    }
+    case NativeClientPacket.OPWORLDENTITY4: {
+      reader.byteSub();
+      return { type: "world_entity_option", index: reader.short(), clickType: 4 };
+    }
+    case NativeClientPacket.OPWORLDENTITY5: {
+      reader.byteAdd();
+      return { type: "world_entity_option", index: reader.shortLE(), clickType: 5 };
+    }
+    case NativeClientPacket.OPWORLDENTITY6:
+      return { type: "world_entity_option", index: reader.shortAddLE(), clickType: 6 };
     case NativeClientPacket.IF_BUTTOND: {
       return {
         type: "widget_drag", targetItemId: reader.shortLE(), targetWidgetId: reader.intLE(),
@@ -738,12 +784,14 @@ export function decodeClientPacket(frame: Buffer): ClientMessage {
       const clickType = reader.byte() || undefined;
       return { type: "object_option", id, x, y, clickType, action };
     }
-    case ClientPacket.CHAT:
-      return {
-        type: "chat",
-        messageType: (["public", "game", "friends_chat"] as const)[reader.byte()] ?? "public",
-        text: reader.string(),
-      };
+    case ClientPacket.CHAT: {
+      // Kind 3 is public chat the client's autochat timer repeats (chat_sendpublic type 1).
+      const kind = reader.byte();
+      const messageType = (["public", "game", "friends_chat"] as const)[kind] ?? "public";
+      return kind === CHAT_KIND_AUTOCHAT
+        ? { type: "chat", messageType: "public", autoChat: true, text: reader.string() }
+        : { type: "chat", messageType, text: reader.string() };
+    }
     case HighClientPacket.FRIENDS_CHAT_ACTION: {
       const actionCode = reader.byte();
       const name = reader.string();
@@ -776,6 +824,9 @@ export function decodeClientPacket(frame: Buffer): ClientMessage {
         privateMode: reader.byte(),
         tradeMode: reader.byte(),
       };
+    case HighClientPacket.REPORT_ABUSE:
+      // SEND_SNAPSHOT: the reported name, the internal rule id (RSProx's table) and the mute request.
+      return { type: "report_abuse", name: reader.string(), ruleId: reader.byte(), mute: reader.byte() === 1 };
     case HighClientPacket.VARP_TRANSMIT:
       return { type: "varp_transmit", varpId: reader.short(), value: reader.int() };
     case HighClientPacket.INTERACT:
@@ -967,6 +1018,10 @@ function string(value: string): Buffer {
 /** Chatbox channels a game message can go to (the cache's chat types, as rsprox names them). */
 export const ChatType = {
   GAME: 0,
+  /** Autochat: a phrase the sender's client repeats; the chatbox colours it as "Auto chat". */
+  AUTOTYPER: 90,
+  /** Autochat from a player with a mod crown. */
+  MODAUTOTYPER: 91,
   /** Filtered out with "Filter: on" (the Game tab's filter). */
   SPAM: 105,
   /** An NPC's overhead line, shown as "Name: text"; the NPC's name goes in `from`. */
@@ -1226,7 +1281,7 @@ export function encodeCameraShake(slot: number, randomAmplitude: number, sineAmp
 }
 
 /** Camera easings by wire id; the client decodes the same order. */
-export const CAMERA_EASINGS = ["linear", "ease_in_out_sine", "ease_out_cubic", "ease_out_sine"] as const;
+export const CAMERA_EASINGS = ["linear", "ease_in_out_sine", "ease_out_cubic", "ease_out_sine", "ease_in_sine"] as const;
 export type CameraEasing = typeof CAMERA_EASINGS[number];
 
 export type CameraMovementOptions = {
@@ -1361,6 +1416,27 @@ export function encodeResetInteractionMode(worldId: number): Buffer {
 }
 
 /** Puts the camera back on the player and stops any shake (cam_reset). */
+/**
+ * cam_target: the camera (and what the client centres its view and sound on) follows a tile or
+ * another player instead of the local player, as for a spectator; cam_reset ends it.
+ */
+export function encodeCameraTarget(target: { x: number; y: number; level: number } | { player: number }): Buffer {
+  if ("player" in target) {
+    const payload = Buffer.alloc(4);
+    payload[0] = 12;
+    payload[1] = 1;
+    payload.writeUInt16BE(target.player & 0xffff, 2);
+    return encodeServerPacket(ServerPacketId.CAMERA_CONTROL, payload);
+  }
+  const payload = Buffer.alloc(7);
+  payload[0] = 12;
+  payload[1] = 0;
+  payload.writeUInt16BE(target.x & 0xffff, 2);
+  payload.writeUInt16BE(target.y & 0xffff, 4);
+  payload[6] = target.level & 0x3;
+  return encodeServerPacket(ServerPacketId.CAMERA_CONTROL, payload);
+}
+
 export function encodeCameraReset(): Buffer {
   return encodeServerPacket(ServerPacketId.CAMERA_CONTROL, Buffer.from([0]));
 }
@@ -1831,6 +1907,16 @@ export function encodeWidgetSetPosition(uid: number, x: number, y: number): Buff
   return encodeServerPacket(ServerPacketId.WIDGET_SET_POSITION, payload);
 }
 
+/** IF_SETANGLE: a model component's camera, its x and y angles and zoom, as the game sends it. */
+export function encodeWidgetSetAngle(uid: number, angleX: number, angleY: number, zoom: number): Buffer {
+  const payload = Buffer.alloc(10);
+  payload.writeInt32BE(uid | 0, 0);
+  payload.writeUInt16BE(angleX & 0xffff, 4);
+  payload.writeUInt16BE(angleY & 0xffff, 6);
+  payload.writeUInt16BE(zoom & 0xffff, 8);
+  return encodeServerPacket(ServerPacketId.WIDGET_SET_ANGLE, payload);
+}
+
 export function encodeWidgetSetItem(uid: number, itemId: number, quantity = 1): Buffer {
   const payload = Buffer.alloc(10);
   payload.writeInt32BE(uid | 0);
@@ -1863,6 +1949,17 @@ export function encodeWidgetSetFlagsRange(uid: number, fromSlot: number, toSlot:
   payload.writeUInt16BE(toSlot & 0xffff, 6);
   payload.writeInt32BE(flags | 0, 8);
   return encodeServerPacket(ServerPacketId.WIDGET_SET_FLAGS_RANGE, payload);
+}
+
+/** IF_SETEVENTS_V2: the flags plus a transmit mask for ops 1-32 (bit N for op N+1). */
+export function encodeWidgetSetFlagsRangeV2(uid: number, fromSlot: number, toSlot: number, flags: number, ops: number): Buffer {
+  const payload = Buffer.alloc(16);
+  payload.writeInt32BE(uid | 0);
+  payload.writeUInt16BE(fromSlot & 0xffff, 4);
+  payload.writeUInt16BE(toSlot & 0xffff, 6);
+  payload.writeInt32BE(flags | 0, 8);
+  payload.writeInt32BE(ops | 0, 12);
+  return encodeServerPacket(ServerPacketId.WIDGET_SET_FLAGS_RANGE_V2, payload);
 }
 
 export function encodeWidgetSetAnimation(uid: number, animationId: number): Buffer {
@@ -2131,11 +2228,20 @@ export function resolveGameframeRoot(
   return STANDARD_GAMEFRAME_ROOTS.has(saved) ? saved : fallback;
 }
 
+// Minimap orbs: desktop `orbs`, and the mobile toplevel's own `orbs_osm`, laid out for the
+// mobile orb art (live's Android client mounts it at toplevel_osm:orbs).
+export const ORBS_GROUP_ID = 160;
+export const MOBILE_ORBS_GROUP_ID = 897;
+
+export function orbsGroupFor(root: number): number {
+  return root === MOBILE_GAMEFRAME_ROOT ? MOBILE_ORBS_GROUP_ID : ORBS_GROUP_ID;
+}
+
 export function encodeGameframeBootstrap(playerName: string, root: number = 161, xpDropsEnabled = false): Buffer[] {
   const mounts = [
     // pm_chat -> toplevel_osrs_stretch:pm_container (93), xp_drops -> :xp_drops (9).
     // 161:7 (hud_container_back) has no fixed-layout pane, so XP drops mounted there vanished.
-    [96, 162], [93, 163], [33, 160], ...(xpDropsEnabled ? [[9, 122]] : []), [6, 651, 5929],
+    [96, 162], [93, 163], [33, orbsGroupFor(root)], ...(xpDropsEnabled ? [[9, 122]] : []), [6, 651, 5929],
     [76, 593], [77, 320], [78, 629], [79, MAIN_INVENTORY_GROUP_ID], [80, 387], [81, 541],
     [82, 218], [83, 7], [84, 109], [85, 429], [86, 182], [87, 116],
     [88, 216], [89, 239],
@@ -2216,11 +2322,20 @@ export function encodePlayJingle(jingleId: number, delay = 0): Buffer {
   return packet(ServerPacket.PLAY_JINGLE, payload, 0);
 }
 
-export function encodePlaySong(trackId: number): Buffer {
+/** MidiSongV2 fades, in client cycles (20 ms). */
+export type SongFades = { fadeOutDelay: number; fadeOutSpeed: number; fadeInDelay: number; fadeInSpeed: number };
+/** What live sends for a region change (RSProx's MidiSongV2 defaults; every region change in the rsprox captures). */
+export const SONG_FADE_DEFAULTS: SongFades = { fadeOutDelay: 0, fadeOutSpeed: 60, fadeInDelay: 60, fadeInSpeed: 0 };
+/** What live sends with the current track right before a jingle. */
+export const SONG_NO_FADES: SongFades = { fadeOutDelay: 0, fadeOutSpeed: 0, fadeInDelay: 0, fadeInSpeed: 0 };
+
+export function encodePlaySong(trackId: number, fades: SongFades = SONG_FADE_DEFAULTS): Buffer {
   const payload = Buffer.alloc(10);
   payload.writeUInt16BE(trackId & 0xffff, 0);
-  payload.writeUInt16BE(100, 4);
-  payload.writeUInt16BE(100, 6);
+  payload.writeUInt16BE(fades.fadeOutDelay & 0xffff, 2);
+  payload.writeUInt16BE(fades.fadeOutSpeed & 0xffff, 4);
+  payload.writeUInt16BE(fades.fadeInDelay & 0xffff, 6);
+  payload.writeUInt16BE(fades.fadeInSpeed & 0xffff, 8);
   return packet(ServerPacket.PLAY_SONG, payload, 0);
 }
 
@@ -2360,7 +2475,10 @@ export function createPlayerSyncState(
 }
 
 export function createNpcSyncState(): NpcSyncState {
-  return { indices: [], lastTiles: new Map(), typeIds: new Map(), headIcons: new Map(), interactionIndices: new Map() };
+  return {
+    indices: [], lastTiles: new Map(), typeIds: new Map(), headIcons: new Map(),
+    interactionIndices: new Map(), worldViews: new Map(),
+  };
 }
 
 export function encodePlayerAppearance(
@@ -2465,6 +2583,8 @@ const NPC_MASK = {
   EXACT_MOVE: 0x400,
   FACE_TILE: 0x800,
   MODEL_CUSTOMISATION: 0x1000,
+  BASE_ANIMATIONS: 0x2000,
+  TRANSPARENCY: 0x8000,
   SPOT_ANIM: 0x20000,
 } as const;
 
@@ -2595,6 +2715,8 @@ function npcUpdateMask(view: NpcView, writeInteraction: boolean, writeHeadIcon =
     (view.exactMove ? NPC_MASK.EXACT_MOVE : 0) |
     (view.faceTile ? NPC_MASK.FACE_TILE : 0) |
     (view.modelCustomisation ? NPC_MASK.MODEL_CUSTOMISATION : 0) |
+    (view.baseAnimations ? NPC_MASK.BASE_ANIMATIONS : 0) |
+    (view.transparency ? NPC_MASK.TRANSPARENCY : 0) |
     (view.graphics?.length ? NPC_MASK.SPOT_ANIM : 0);
 }
 
@@ -2700,6 +2822,21 @@ function writeNpcUpdateBlock(view: NpcView, writeInteraction: boolean, writeHead
       bytes.push(entry.slot & 0xff);
       shortLE(bytes, entry.modelId & 0xffff);
     }
+  }
+  if (view.baseAnimations) {
+    bytes.push(view.baseAnimations.length & 0xff);
+    for (const entry of view.baseAnimations) {
+      bytes.push(entry.slot & 0xff);
+      shortBE(bytes, entry.seqId < 0 ? 0xffff : entry.seqId);
+    }
+  }
+  if (view.transparency) {
+    // Start and end cycles into the tick, the transparency it fades from (0xffff: its current
+    // look) and to: 0 opaque, 255 invisible.
+    shortBE(bytes, view.transparency.startCycles & 0xffff);
+    shortBE(bytes, view.transparency.endCycles & 0xffff);
+    shortBE(bytes, view.transparency.from < 0 ? 0xffff : view.transparency.from & 0xff);
+    bytes.push(view.transparency.to & 0xff);
   }
   return Buffer.from(bytes);
 }
@@ -2960,7 +3097,9 @@ export function encodeNpcSync(
   loopCycle: number,
   local: Tile,
   views: NpcView[],
-  state: NpcSyncState
+  state: NpcSyncState,
+  deckLocal?: Tile,
+  deckBase?: (worldView: number) => Tile | undefined,
 ): Buffer {
   const writer = new BitWriter();
   const desired = new Map<number, NpcView>();
@@ -2975,7 +3114,8 @@ export function encodeNpcSync(
   for (const index of state.indices.slice(0, 255)) {
     const view = desired.get(index);
     const last = state.lastTiles.get(index);
-    if (!view || !last || view.level !== local.level || state.typeIds.get(index) !== view.typeId) {
+    if (!view || !last || view.level !== local.level || state.typeIds.get(index) !== view.typeId
+      || (state.worldViews.get(index) ?? -1) !== (view.worldView ?? -1)) {
       writer.writeBits(1, 1);
       writer.writeBits(2, 3);
       if (view) readd.add(index);
@@ -3026,23 +3166,32 @@ export function encodeNpcSync(
 
   const nextSet = new Set(nextIndices);
   const additions = Array.from(desired.values()).filter((view) => !nextSet.has(view.index));
+  // Main-world NPCs are relative to the root tile; deck NPCs to the player's deck tile, with
+  // the boat's entity index as their world view.
+  const baseFor = (view: NpcView): Tile => view.worldView != null
+    ? (deckBase?.(view.worldView) ?? deckLocal ?? local)
+    : local;
   const large = additions.some((view) => {
-    const dx = view.x - local.x;
-    const dy = view.y - local.y;
+    const base = baseFor(view);
+    const dx = view.x - base.x;
+    const dy = view.y - base.y;
     return dx < -16 || dx > 15 || dy < -16 || dy > 15;
   });
   const signed = (value: number, bits: number) => (value < 0 ? value + (1 << bits) : value) & ((1 << bits) - 1);
   for (const view of additions) {
+    const base = baseFor(view);
     if (nextIndices.length >= 255 || view.level !== local.level) break;
     writer.writeBits(16, view.index);
     const writeInteraction = (view.interactionIndex ?? -1) >= 0;
     const writeHeadIcon = (view.headIcon ?? -1) >= 0;
     const block = npcUpdateMask(view, writeInteraction, writeHeadIcon) !== 0;
     writer.writeBits(1, block ? 1 : 0);
-    writer.writeBits(1, 0); // no world view
+    const worldView = view.worldView;
+    writer.writeBits(1, worldView != null ? 1 : 0);
+    if (worldView != null) writer.writeBits(32, worldView & 0xffff);
     writer.writeBits(1, readd.has(view.index) ? 1 : 0);
-    writer.writeBits(large ? 8 : 5, signed(view.y - local.y, large ? 8 : 5));
-    writer.writeBits(large ? 8 : 5, signed(view.x - local.x, large ? 8 : 5));
+    writer.writeBits(large ? 8 : 5, signed(view.y - base.y, large ? 8 : 5));
+    writer.writeBits(large ? 8 : 5, signed(view.x - base.x, large ? 8 : 5));
     writer.writeBits(3, view.rotation & 7);
     writer.writeBits(16, view.typeId & 0xffff);
     nextIndices.push(view.index);
@@ -3056,6 +3205,7 @@ export function encodeNpcSync(
   state.typeIds.clear();
   state.headIcons.clear();
   state.interactionIndices.clear();
+  state.worldViews.clear();
   for (const index of nextIndices) {
     const view = desired.get(index);
     if (view) {
@@ -3063,6 +3213,7 @@ export function encodeNpcSync(
       state.typeIds.set(index, view.typeId);
       state.headIcons.set(index, view.headIcon ?? -1);
       state.interactionIndices.set(index, view.interactionIndex ?? -1);
+      state.worldViews.set(index, view.worldView ?? -1);
     }
   }
   const sync = Buffer.concat([writer.toBuffer(), ...updateBlocks]);

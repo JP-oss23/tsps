@@ -1,5 +1,6 @@
 import { Player } from "../../../entity/impl/player/Player";
 import { GameConstants } from "../../../GameConstants";
+import { World } from "../../../World";
 import { Item } from "../../../model/Item";
 import { Location } from "../../../model/Location";
 import { MagicSpellbook } from "../../../model/MagicSpellbook";
@@ -33,8 +34,6 @@ type SelfSpell = {
     blocked?: (player: Player) => string | null;
 };
 
-/** A tick in milliseconds, for durations the Wiki gives in ticks. */
-const TICK_MS = 600;
 /** The cache's self-cast Arceuus animation (human_cast_selfimbue). */
 const SELF_IMBUE = 8970;
 
@@ -51,7 +50,7 @@ class ArceuusSelfSpell extends Spell {
     protected usesSharedCastDelay() { return this.data.castDelay === true; }
     cast(player: Player): boolean {
         const cooldown = this.data.cooldown;
-        if (cooldown && Number(player.getAttribute(cooldown.attribute) ?? 0) > Date.now()) {
+        if (cooldown && Number(player.getAttribute(cooldown.attribute) ?? 0) > World.getProcessCycle()) {
             if (cooldown.message) player.sendMessage(cooldown.message);
             return true;
         }
@@ -100,7 +99,7 @@ class ArceuusTeleportSpell extends Spell {
 const rune = (id: number, amount = 1) => new Item(id, amount);
 const teleport = (level: number, experience: number, runes: Item[], x: number, y: number, z = 0, cooldown?: TeleportSpell["cooldown"]) =>
     new ArceuusTeleportSpell({ level, experience, runes, destination: new Location(x, y, z), cooldown });
-const THRALL_COOLDOWN = { attribute: "arceuus:thrall-until", duration: 30_000 };
+const THRALL_COOLDOWN = { attribute: "arceuus:thrall-until", duration: 10_000 };
 
 /** Self-cast Arceuus spells. Targeted spells remain in their respective packet handlers. */
 export class ArceuusSpells {
@@ -118,7 +117,7 @@ export class ArceuusSpells {
             id: 20763, level: 73, experience: 83, runes: [rune(566, 4), rune(561, 2), rune(564)],
             animation: SELF_IMBUE, graphic: 1851,
             cooldown: { attribute: "arceuus:ward-cooldown", duration: 30_000, message: "You can only cast Ward of Arceuus every 30 seconds." },
-            effect: (player) => player.setAttribute(this.WARD_UNTIL, Date.now() + player.getSkillManager().getCurrentLevel(Skill.MAGIC) * TICK_MS),
+            effect: (player) => player.setAttribute(this.WARD_UNTIL, World.getProcessCycle() + player.getSkillManager().getCurrentLevel(Skill.MAGIC)),
         })],
         // Wiki: lasts 3 ticks per base Magic level (x5 with a purging staff), with its messages.
         ["mark of darkness", new ArceuusSelfSpell({
@@ -157,7 +156,7 @@ export class ArceuusSpells {
             id: 15309, level: 80, experience: 90, runes: [rune(560), rune(565), rune(566)],
             animation: SELF_IMBUE, graphic: 1854,
             cooldown: { attribute: "arceuus:death-charge-cooldown", duration: 60_000, message: "You can only cast Death Charge every 60 seconds." },
-            effect: (player) => player.setAttribute(this.DEATH_CHARGE_UNTIL, Date.now() + 60_000),
+            effect: (player) => player.setAttribute(this.DEATH_CHARGE_UNTIL, World.getProcessCycle() + 100),
         })],
         ["degrime", new ArceuusSelfSpell({
             id: 15345, level: 70, experience: 83, runes: [rune(557, 4), rune(561, 2)],
@@ -169,7 +168,7 @@ export class ArceuusSpells {
             id: 15344, level: 47, experience: 58, runes: [rune(557, 5), rune(554, 5), rune(564, 5)],
             animation: 8979, graphic: 1881,
             cooldown: { attribute: "arceuus:shadow-veil-cooldown", duration: 30_000, message: "You can only cast Shadow Veil every 30 seconds." },
-            effect: (player) => player.setAttribute(this.SHADOW_VEIL_UNTIL, Date.now() + player.getSkillManager().getMaxLevel(Skill.MAGIC) * TICK_MS),
+            effect: (player) => player.setAttribute(this.SHADOW_VEIL_UNTIL, World.getProcessCycle() + player.getSkillManager().getMaxLevel(Skill.MAGIC)),
         })],
         // Wiki: prayer to run energy 1:1, only as much as fills it, once every 10.2 seconds.
         ["vile vigour", new ArceuusSelfSpell({
@@ -251,19 +250,19 @@ export class ArceuusSpells {
     }
 
     public static hasWard(target: any): boolean {
-        return Number(target?.getAttribute?.(this.WARD_UNTIL) ?? 0) > Date.now();
+        return Number(target?.getAttribute?.(this.WARD_UNTIL) ?? 0) > World.getProcessCycle();
     }
 
     public static hasDeathCharge(player: Player): boolean {
-        return Number(player.getAttribute(this.DEATH_CHARGE_UNTIL) ?? 0) > Date.now();
+        return Number(player.getAttribute(this.DEATH_CHARGE_UNTIL) ?? 0) > World.getProcessCycle();
     }
 
     public static hasShadowVeil(player: Player): boolean {
-        return Number(player.getAttribute(this.SHADOW_VEIL_UNTIL) ?? 0) > Date.now();
+        return Number(player.getAttribute(this.SHADOW_VEIL_UNTIL) ?? 0) > World.getProcessCycle();
     }
 
     public static hasMark(player: Player): boolean {
-        return Number(player.getAttribute(this.MARK_UNTIL) ?? 0) > Date.now();
+        return Number(player.getAttribute(this.MARK_UNTIL) ?? 0) > World.getProcessCycle();
     }
 
     /**
@@ -274,7 +273,7 @@ export class ArceuusSpells {
         const magic = player.getSkillManager().getMaxLevel(Skill.MAGIC);
         const purging = [29594, 29595].includes(player.getEquipment().getWeapon()?.getId?.() ?? -1);
         const ticks = magic * 3 * (purging ? 5 : 1);
-        player.setAttribute(this.MARK_UNTIL, Date.now() + ticks * TICK_MS);
+        player.setAttribute(this.MARK_UNTIL, World.getProcessCycle() + ticks);
         const token = Number(player.getAttribute(this.MARK_TOKEN) ?? 0) + 1;
         player.setAttribute(this.MARK_TOKEN, token);
         let left = ticks;
@@ -312,7 +311,8 @@ export class ArceuusSpells {
 
     public static applyCorruption(caster: Player, target: Player): void {
         const total = Number(caster.getAttribute(this.CORRUPTION) ?? 0);
-        if (total <= 0 || this.hasWard(target)) return;
+        const validTarget = () => target.isRegistered() && target.getHitpoints() > 0 && !ArceuusSpells.hasWard(target);
+        if (total <= 0 || !validTarget()) return;
         const marked = caster.getAttribute(this.CORRUPTION_MARKED) === true;
         caster.setAttribute(this.CORRUPTION, null);
         caster.setAttribute(this.CORRUPTION_MARKED, null);
@@ -324,8 +324,13 @@ export class ArceuusSpells {
         const delay = marked ? 5 : 10;
         TaskManager.submit(new class extends Task {
             constructor() { super(delay); }
+            onTick(): void {
+                // Death/departure can end before the next 5/10-tick drain.
+                // Observe the target each tick so respawn cannot revive this effect.
+                if (this.isRunning() && !validTarget()) this.stop();
+            }
             execute(): void {
-                if (!target.isRegistered() || ArceuusSpells.hasWard(target) || index >= drains.length) {
+                if (!validTarget() || index >= drains.length) {
                     this.stop();
                     return;
                 }

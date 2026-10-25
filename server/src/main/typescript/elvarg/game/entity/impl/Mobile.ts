@@ -71,6 +71,13 @@ export abstract class Mobile extends Entity {
     public forcedChat: string;
     public walkingDirection: Direction = Direction.NONE;
     public runningDirection: Direction = Direction.NONE;
+    /**
+     * The last compass direction this actor actually faced or stepped in. Unlike
+     * walkingDirection/runningDirection this survives resetUpdating(), so a later tick can
+     * inspect facing without a face packet being sent. Unknown until a face target or
+     * movement supplies one; no Player spawn direction is established by the server.
+     */
+    private facingDirection: Direction = Direction.NONE;
     private lastCombat = new Stopwatch();
     public updateFlag = new UpdateFlag();
     public positionToFace: Location;
@@ -91,7 +98,7 @@ export abstract class Mobile extends Entity {
      */
     interactingMobile: any;
     npcTransformationId = -1;
-    poisonDamage: number;
+    poisonDamage: number = 0;
     /**
      * True when the current affliction is venom rather than ordinary
      * poison. Venom uses a different damage curve (see CombatPoisonEffect):
@@ -99,6 +106,8 @@ export abstract class Mobile extends Entity {
      * doesn't expire on its own.
      */
     private venomed = false;
+    private lastVenomDamage: number | undefined;
+    private venomGeneration = 0;
     // Allocated on first use: most actors never touch prayers.
     private prayerActive: boolean[] | null = null;
     resetMovementQueue = false;
@@ -303,7 +312,15 @@ export abstract class Mobile extends Entity {
     }
 
     setMobileInteraction(mobile: Mobile | null): Mobile {
+        const previousDirection = this.targetFacingDirection(this.interactingMobile);
+        if (previousDirection !== Direction.NONE) {
+            this.facingDirection = previousDirection;
+        }
         this.interactingMobile = mobile;
+        const nextDirection = this.targetFacingDirection(mobile);
+        if (nextDirection !== Direction.NONE) {
+            this.facingDirection = nextDirection;
+        }
         this.getUpdateFlag().flag(Flag.ENTITY_INTERACTION);
         return this;
     }
@@ -478,7 +495,9 @@ export abstract class Mobile extends Entity {
     }
 
     setPoisonDamage(poisonDamage: number) {
+        if (poisonDamage <= 0 && this.poisonDamage > 0) this.venomGeneration++;
         this.poisonDamage = poisonDamage;
+        if (poisonDamage <= 0) this.lastVenomDamage = undefined;
     }
     isPoisoned(): boolean {
         return this.poisonDamage > 0;
@@ -489,11 +508,56 @@ export abstract class Mobile extends Entity {
     }
 
     setVenomed(venomed: boolean) {
+        if (this.venomed !== venomed) this.venomGeneration++;
         this.venomed = venomed;
+        if (!venomed) this.lastVenomDamage = undefined;
+    }
+
+    getLastVenomDamage(): number | undefined {
+        return this.lastVenomDamage;
+    }
+
+    getVenomGeneration(): number {
+        return this.venomGeneration;
+    }
+
+    setLastVenomDamage(damage: number | undefined): void {
+        this.lastVenomDamage = Number.isFinite(damage) && damage > 0
+            ? Math.min(20, Math.floor(damage)) : undefined;
     }
 
     getPositionToFace(): Location {
         return this.positionToFace;
+    }
+
+    /**
+     * The current 8-way compass direction; not the client's 0..2047 rotation. An active
+     * interaction target overrides the last walk/face heading while it is on another tile.
+     */
+    getFacingDirection(): Direction {
+        const interactionDirection = this.targetFacingDirection(this.interactingMobile);
+        return interactionDirection !== Direction.NONE ? interactionDirection : this.facingDirection;
+    }
+
+    private directionTo(x: number, y: number): Direction {
+        return Direction.fromDeltas(x - this.getLocation().getX(), y - this.getLocation().getY());
+    }
+
+    private targetFacingDirection(target: Mobile | null): Direction {
+        const targetLocation = target?.getLocation();
+        return targetLocation == null
+            ? Direction.NONE
+            : this.directionTo(targetLocation.getX(), targetLocation.getY());
+    }
+
+    private updateFacingDirection(target: Location | null): void {
+        if (target == null) {
+            return;
+        }
+        const direction = this.directionTo(target.getX(), target.getY());
+        if (direction !== Direction.NONE) {
+            this.facingDirection = direction;
+        }
     }
 
     setPositionToFace(positionToFace: Location): Mobile {
@@ -513,6 +577,7 @@ export abstract class Mobile extends Entity {
         if (current == null && positionToFace == null) {
             return this;
         }
+        this.updateFacingDirection(positionToFace);
         this.positionToFace = positionToFace;
         this.getUpdateFlag().flag(Flag.FACE_POSITION);
         return this;
@@ -525,6 +590,7 @@ export abstract class Mobile extends Entity {
      * facing their last walk direction.
      */
     forcePositionToFace(positionToFace: Location): Mobile {
+        this.updateFacingDirection(positionToFace);
         this.positionToFace = positionToFace;
         this.getUpdateFlag().flag(Flag.FACE_POSITION);
         return this;
@@ -540,7 +606,9 @@ export abstract class Mobile extends Entity {
         ) {
             return this;
         }
-        this.positionToFace = new Location(x, y, z);
+        const target = new Location(x, y, z);
+        this.updateFacingDirection(target);
+        this.positionToFace = target;
         this.getUpdateFlag().flag(Flag.FACE_POSITION);
         return this;
     }
@@ -614,7 +682,9 @@ export abstract class Mobile extends Entity {
           this.getAsPlayer()?.getRights?.() === PlayerRights.DEVELOPER &&
           this.getAttribute?.(MORTAL_DEVELOPER_ATTRIBUTE) !== true;
         if (hit.getDamage() > this.getHitpoints())
-            hit.setDamage(this.getHitpoints());
+            // Clamp overkill to an integer: HitDamage floors its damage, so passing a legacy
+            // fractional HP (0.5) here turned the killing hit into 0 and left the target alive.
+            hit.setDamage(Math.max(1, Math.ceil(this.getHitpoints())));
         if (hit.getDamage() < 0)
             hit.setDamage(0);
         if (protectedDeveloper) {
@@ -645,6 +715,9 @@ export abstract class Mobile extends Entity {
 
     setWalkingDirection(walkDirection: Direction): void {
         this.walkingDirection = walkDirection;
+        if (walkDirection != null && walkDirection.getId() >= 0) {
+            this.facingDirection = walkDirection;
+        }
     }
 
     getRunningDirection(): Direction {
@@ -653,6 +726,9 @@ export abstract class Mobile extends Entity {
 
     setRunningDirection(runDirection: Direction): void {
         this.runningDirection = runDirection;
+        if (runDirection != null && runDirection.getId() >= 0) {
+            this.facingDirection = runDirection;
+        }
     }
     isResetMovementQueue(): boolean {
         return this.resetMovementQueue;

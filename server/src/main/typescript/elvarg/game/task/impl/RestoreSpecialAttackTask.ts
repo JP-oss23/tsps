@@ -1,26 +1,19 @@
 import { Task } from "../Task";
 import { Mobile } from "../../entity/impl/Mobile";
 import { CombatSpecial } from "../../content/combat/CombatSpecial";
-import { Equipment } from "../../model/container/impl/Equipment";
 import { GameConstants } from "../../GameConstants";
-import { ItemIdentifiers } from "../../../util/ItemIdentifiers";
 
 const DEFAULT_RESTORE_DELAY_TICKS = 50;
-const LIGHTBEARER_RESTORE_DELAY_TICKS = 25;
 const TICK_RATE_MS = Number(GameConstants.GAME_ENGINE_PROCESSING_CYCLE_RATE ?? 600);
 
 function resolveRestoreDelayTicks(character: Mobile): number {
-    if (!character?.isPlayer?.()) {
-        return DEFAULT_RESTORE_DELAY_TICKS;
-    }
-    const ringId = character
-        .getAsPlayer()
-        .getEquipment()
-        .get(Equipment.RING_SLOT)
-        ?.getId?.();
-    return ringId === ItemIdentifiers.LIGHTBEARER
-        ? LIGHTBEARER_RESTORE_DELAY_TICKS
-        : DEFAULT_RESTORE_DELAY_TICKS;
+    // Loaded lazily so this module does not join the Player/QuickPrayers/PrayerHandler/
+    // PluginManager require cycle through EquipmentEffects.
+    const { applySpecialEnergyRestoreModifiers } =
+        require("../../content/combat/EquipmentEffects") as typeof import("../../content/combat/EquipmentEffects");
+    return Math.max(1, Math.round(
+        applySpecialEnergyRestoreModifiers(character, DEFAULT_RESTORE_DELAY_TICKS)
+    ));
 }
 
 function ticksToSeconds(delayTicks: number): number {
@@ -35,6 +28,9 @@ function secondsToTicks(seconds: number, character: Mobile): number {
     return Math.max(1, Math.ceil((normalizedSeconds * 1000) / TICK_RATE_MS));
 }
 
+/** The restore task running for each character, so its timer can be read or restarted. */
+const runningTasks = new WeakMap<Mobile, RestoreSpecialAttackTask>();
+
 export class RestoreSpecialAttackTask extends Task {
     constructor(private character: Mobile, initialDelayTicks?: number) {
     const restoreDelayTicks = resolveRestoreDelayTicks(character);
@@ -42,12 +38,20 @@ export class RestoreSpecialAttackTask extends Task {
     super(firstDelayTicks);
     this.setDelay(restoreDelayTicks);
     this.character = character;
+    runningTasks.set(character, this);
     character.setRecoveringSpecialAttack(true);
     if (character.isPlayer()) {
         character.getAsPlayer().getSpecialAttackRestore().start(ticksToSeconds(firstDelayTicks));
     }
     }
-    
+
+    public stop() {
+        super.stop();
+        if (runningTasks.get(this.character) === this) {
+            runningTasks.delete(this.character);
+        }
+    }
+
     public execute() {
         if (this.character == null || !this.character.isRegistered() || this.character.getSpecialPercentage() >= 100 || !this.character.isRecoveringSpecialAttack()) {
             this.character.setRecoveringSpecialAttack(false);
@@ -81,5 +85,16 @@ export class RestoreSpecialAttackTask extends Task {
 
     public static initialDelayTicksFromSeconds(seconds: number, character: Mobile): number {
         return secondsToTicks(seconds, character);
+    }
+
+    /** Ticks one 10% restore takes for this character now, with modifiers (the Lightbearer) applied. */
+    public static restoreDelayTicks(character: Mobile): number {
+        return resolveRestoreDelayTicks(character);
+    }
+
+    /** The restore task running for this character, or null when its energy isn't restoring. */
+    public static running(character: Mobile): RestoreSpecialAttackTask | null {
+        const task = runningTasks.get(character);
+        return task?.isRunning() ? task : null;
     }
 }

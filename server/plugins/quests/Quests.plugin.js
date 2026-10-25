@@ -28,10 +28,11 @@ const QUESTS = [
   "EnlightenedJourney", "ErnestTheChicken", "EthicallyAcquiredAntiquities", "EyesOfGlouphrie",
   "FairytaleIGrowingPains", "FairytaleIICureAQueen", "FallenFromGrace", "FamilyCrest",
   "FightArena", "FishingContest", "ForgettableTale", "ForsakenTower",
-  "FremennikTrials", "GardenOfDeath", "GardenOfTranquillity", "GertrudesCat",
+  // Exiles owns eligible Brundt conversations and yields for earlier quests and lost Seals.
+  "TheFremennikExiles", "FremennikTrials", "GardenOfDeath", "GardenOfTranquillity", "GertrudesCat",
   "GettingAhead", "GhostsAhoy", "GiantDwarf", "GoblinDiplomacy",
   "GrandTree", "GreatBrainRobbery", "GrimTales", "HandInTheSand",
-  "HauntedMine", "HazeelCult", "HeroesQuest", "HolyGrail",
+  "HauntedMine", "HazeelCult", "HeroesQuest", "HisFaithfulServants", "HolyGrail",
   "HorrorFromTheDeep", "IcthlarinsLittleHelper", "IdesOfMilk", "ImpCatcher",
   "InAidOfTheMyreque", "InSearchOfTheMyreque", "JunglePotion", "KingsRansom",
   "KnightsSword", "LandOfTheGoblins", "LearningTheRopes", "LegendsQuest", "LostCity",
@@ -39,9 +40,10 @@ const QUESTS = [
   "MeatAndGreet", "MerlinsCrystal", "MisthalinMystery", "MonkeyMadnessI",
   "MonkeyMadnessII", "MonksFriend", "MountainDaughter", "MourningsEndPartI",
   "MourningsEndPartII", "MurderMystery", "MyArmsBigAdventure", "NatureSpirit",
-  "ObservatoryQuest", "OlafsQuest", "OneSmallFavour", "Pandemonium",
+  // Prying Times owns Steve after Pandemonium and yields outside its own stage window.
+  "ObservatoryQuest", "OlafsQuest", "OneSmallFavour", "PryingTimes", "Pandemonium",
   "PathOfGlouphrie", "PerilousMoons", "PiratesTreasure", "PlagueCity",
-  "PorcineOfInterest", "PriestInPeril", "PrinceAliRescue", "PryingTimes",
+  "PorcineOfInterest", "PriestInPeril", "PrinceAliRescue",
   "QueenOfThieves", "RagAndBoneManI", "RagAndBoneManII", "Ratcatchers",
   "RecruitmentDrive", "RedReef", "Regicide", "RestlessGhost",
   "RibbitingTale", "RomeoAndJuliet", "RovingElves", "RoyalTrouble",
@@ -51,7 +53,7 @@ const QUESTS = [
   "ShiloVillage", "SleepingGiants", "SlugMenace", "SoulsBane",
   "SpiritsOfTheElid", "SwanSong", "TaiBwoWannaiTrio", "TailOfTwoCats",
   "TaleOfTheRighteous", "TasteOfHope", "TearsOfGuthix", "TempleOfIkov", "TempleOfTheEye",
-  "TheFeud", "TheFinalDawn", "TheFremennikExiles", "TheFremennikIsles",
+  "TheFeud", "TheFinalDawn", "TheFremennikIsles",
   "TheGolem", "TheHeartOfDarkness", "ThroneOfMiscellania", "TouristTrap",
   "TowerOfLife", "TreeGnomeVillage", "TribalTotem", "TrollRomance",
   "TrollStronghold", "TroubledTortugans", "TwilightPromise", "UndergroundPass",
@@ -85,10 +87,14 @@ function forPlayers(api) {
   return new Proxy(api, {
     get(target, property) {
       if (BOT_SKIPPED_HOOKS.has(property)) {
-        return (handler) => target[property]((event) => {
-          if (event?.player?.isPlayerBot?.() === true) return;
-          return handler(event);
-        });
+        return (handler) => {
+          const guarded = (event) => {
+            if (event?.player?.isPlayerBot?.() === true) return;
+            return handler(event);
+          };
+          Object.defineProperty(guarded, "name", { value: handler.name });
+          return target[property](guarded);
+        };
       }
       const value = target[property];
       return typeof value === "function" ? value.bind(target) : value;
@@ -104,7 +110,10 @@ module.exports = {
   name: "Quests",
   QUESTS,
   register(api) {
-    const questApi = forPlayers(api);
-    for (const quest of questsForWorld(api.core)) require(`./quests/${quest}.Quest`)(questApi);
+    require("./QuestRuntime").registerQuestWidgets(forPlayers(api));
+    for (const quest of questsForWorld(api.core)) {
+      const questApi = forPlayers(api.withProfileLabel?.(`Quests/${quest}`) ?? api);
+      require(`./quests/${quest}.Quest`)(questApi);
+    }
   },
 };

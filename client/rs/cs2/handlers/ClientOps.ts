@@ -14,6 +14,7 @@ import { VARBIT_ROOF_REMOVAL } from "../../../common/vars";
 import { MenuTargetType } from "../../MenuEntry";
 import { chatHistory } from "../ChatHistory";
 import { Opcodes } from "../Opcodes";
+import { CANCEL_SELECTION_HANDLER } from "../../../widgets/gl/widgetsGl/constants";
 import type { HandlerMap } from "./HandlerTypes";
 
 const DEVICE_OPTION_INTERFACE_SCALING = 27;
@@ -41,6 +42,9 @@ function normalizeUiZoomPercent(percent: number, minPercent: number): number {
 
 /** Rev 241 translations_set/clear: key -> text. */
 const TRANSLATIONS = new Map<string, string>();
+
+/** ^gameoption_chat_timestamps: the mode of setting 119 "Chat timestamps" (0 off, 1 server time, 2 local time). */
+const GAMEOPTION_CHAT_TIMESTAMPS = 10;
 
 export function registerClientOps(handlers: HandlerMap): void {
     // === Clock ===
@@ -951,6 +955,11 @@ export function registerClientOps(handlers: HandlerMap): void {
         return undefined;
     };
 
+    // While an item or spell is selected, every op-less widget gets a target that only clears
+    // the selection on click. Over the game view those would hide the world entry
+    // ("Use Knife -> Goblin") behind an empty component hover.
+    const isMenuHoverTarget = (t: any): boolean => t?.onClick !== CANCEL_SELECTION_HANDLER;
+
     const getHoverTarget = (osrsClient: any): any => {
         for (const canvasAny of getInteractionCanvases(osrsClient)) {
             const clicks =
@@ -979,11 +988,11 @@ export function registerClientOps(handlers: HandlerMap): void {
                 // op-bearing rows and would otherwise blank the minimenu.
                 const hit =
                     clicks.pick(px, py, (t: any) => !!t?.primaryOption?.option) ||
-                    clicks.pick(px, py);
+                    clicks.pick(px, py, isMenuHoverTarget);
                 if (hit) return hit;
             }
             const hoverTarget = clicks?.getHoverTarget?.();
-            if (hoverTarget) return hoverTarget;
+            if (hoverTarget && isMenuHoverTarget(hoverTarget)) return hoverTarget;
         }
         return undefined;
     };
@@ -1379,17 +1388,23 @@ export function registerClientOps(handlers: HandlerMap): void {
         ctx.pushInt(value);
     });
 
-    // gameoption_set(optionId, value)
+    // gameoption_set(optionId, value). Option 10 is the chat timestamp mode: proc 4619
+    // (settings_chat_timestamps) stores varbit 12384 there when the setting changes, and the
+    // history ops read it back as chat_gettimestamps.
     handlers.set(Opcodes.GAMEOPTION_SET, (ctx) => {
         const value = ctx.intStack[--ctx.intStackSize];
         const optionId = ctx.intStack[--ctx.intStackSize];
+        if (optionId === GAMEOPTION_CHAT_TIMESTAMPS) ctx.chatTimestampMode = value | 0;
         ctx.setGameOption?.(optionId, value);
     });
 
     // gameoption_get(optionId) -> value
     handlers.set(Opcodes.GAMEOPTION_GET, (ctx) => {
         const optionId = ctx.intStack[--ctx.intStackSize];
-        const value = ctx.getGameOption?.(optionId) ?? 0;
+        const value =
+            optionId === GAMEOPTION_CHAT_TIMESTAMPS
+                ? ctx.chatTimestampMode | 0
+                : (ctx.getGameOption?.(optionId) ?? 0);
         ctx.pushInt(value);
     });
 

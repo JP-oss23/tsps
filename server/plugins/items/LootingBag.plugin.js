@@ -213,11 +213,19 @@ function handleItemOnItem(event) {
   player.getPacketSender().sendEnterAmountPrompt("How many would you like to store?");
 }
 
+/** Public read-only contents query; the bag owner keeps its metadata private. */
+function answerContents(event) {
+  if (!isBag(event.item)) return;
+  event.contents.push(...bagItems(event.item).map(({ id, amount }) => ({ id, amount })));
+  event.handled = true;
+}
+
 module.exports = {
   name: "LootingBag",
   members: true,
   dependsOn: ["Wilderness", "Food", "Potions", "LootKeys"],
   register(api) {
+    api.onCustomEvent("storage:contents", answerContents);
     api.onGroundItemPickup((event) => {
       const bag = bagFor(event.player);
       const item = event.groundItem.getItem();

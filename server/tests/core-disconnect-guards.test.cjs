@@ -92,6 +92,8 @@ test('interaction stop cancels queued walking without routing back to an old til
   };
   connection.inject([{ type: 'interaction_stop' }]);
   await connection.idle();
+  assert.deepEqual(stopped, [], 'input waits for the player\'s turn');
+  connection.processTurnPackets();
   assert.deepEqual(stopped, ['route', 'walk-task']);
 });
 
@@ -790,6 +792,7 @@ test('Casting a utility spell cannot immediately select its newly opened choice 
  try {
   SpellTeleports.handleSelf=()=>false;LunarSpells.handleSelf=()=>{active=true;return true;};
   await connection.dispatch([{type:'widget_action',widgetId:(218<<16)|113,groupId:218,childId:113,buttonNum:1,itemId:9109}]);
+  connection.processTurnPackets();
   assert.equal(active,true);assert.equal(selected,0);
  }finally{LunarSpells.handleSelf=original;SpellTeleports.handleSelf=teleport;}
 });
@@ -869,10 +872,14 @@ test('NPC spell targeting requires explicit area permission for actionless puzzl
   const {CombatSpells}=require('../dist/game/content/combat/magic/CombatSpells');
   const originalNpc=World.getNpcs, originalSpell=CombatSpells.getCombatSpell;
   let permission=null, attackable=false, valid=true, casts=0;
-  const npc={getHitpoints:()=>10,getLocation:()=>({}),getCurrentDefinition:()=>({isAttackable:()=>attackable}),
-    getPrivateArea:()=>({canCastOnNpc:()=>permission})};
-  const spell={canCastOnTarget:()=>valid};
-  const player={getHitpoints:()=>99,busy:()=>false,getLocation:()=>({isWithinDistance:()=>true}),
+  const privateArea={canCastOnNpc:()=>permission};
+  const npc={getHitpoints:()=>10,getLocation:()=>({getX:()=>1,getY:()=>1,getZ:()=>0}),getArea:()=>null,
+    getCurrentDefinition:()=>({isAttackable:()=>attackable}),isPlayer:()=>false,getSize:()=>1,
+    getPrivateArea:()=>privateArea,getOwner:()=>null,getContentId:()=>1};
+  const spell={canCastOnTarget:()=>valid,canCast:()=>true,spellId:()=>1,castSound:()=>null,
+    startCast(){},baseExperience:()=>0};
+  const player={getHitpoints:()=>99,busy:()=>false,getArea:()=>null,getPrivateArea:()=>privateArea,
+    getLocation:()=>({getX:()=>1,getY:()=>1,getZ:()=>0,isWithinDistance:()=>true}),isPlayer:()=>true,getSize:()=>1,
     getMovementQueue:()=>({reset(){}}),getCombat:()=>({castSpellOn:(target,chosen)=>{assert.equal(target,npc);assert.equal(chosen,spell);casts++;}})};
   World.getNpcs=()=>({capacityReturn:()=>10,get:()=>npc});CombatSpells.getCombatSpell=()=>spell;
   try {
@@ -893,4 +900,54 @@ test('player healing preserves existing overheal and still caps ordinary health 
   Player.prototype.heal.call(player,6);assert.equal(hp,121,'healing neither removes nor extends existing overheal');
   hp=98;Player.prototype.heal.call(player,6);assert.equal(hp,99);
   hp=30;Player.prototype.heal.call(player,6);assert.equal(hp,36);
+});
+
+test('a logged-in player\'s input waits for their turn; upkeep and plugin traffic do not', async () => {
+  const channel = stubChannel();
+  const connection = new net.ClientConnection(channel);
+  const stopped = [];
+  const pluginReplies = [];
+  connection.player = {
+    getAttribute: () => undefined,
+    getSession: () => ({ sendClientPacket: (frame) => pluginReplies.push(frame) }),
+    getMovementQueue: () => ({ reset: () => stopped.push('route'), walkToReset() {} }),
+    getCombat: () => ({ reset() {} }),
+    setFollowing() {},
+    setMobileInteraction() {},
+    setPositionToFace() {},
+  };
+  await connection.dispatch([
+    { type: 'ping' },
+    { type: 'plugin_message', channel: 'test', data: '' },
+    { type: 'interaction_stop' },
+  ]);
+  assert.deepEqual(connection.turnPackets.map((packet) => packet.type), ['interaction_stop']);
+  assert.equal(pluginReplies.length, 1, 'plugin traffic is answered as it arrives');
+  assert.deepEqual(stopped, []);
+
+  // Input that arrived before a disconnect still counts while the player is held in the world.
+  connection.closed = true;
+  connection.processTurnPackets();
+  assert.deepEqual(stopped, ['route']);
+  assert.equal(connection.turnPackets.length, 0);
+  connection.processTurnPackets();
+  assert.deepEqual(stopped, ['route'], 'each packet acts once');
+});
+
+test('a client flooding one turn with input is disconnected', async () => {
+  const channel = stubChannel();
+  const connection = new net.ClientConnection(channel);
+  connection.player = { getAttribute: () => undefined, setDisconnectSource() {}, getTrading: () => ({ closeTrade() {} }) };
+  const originalSave = GameConstants.PLAYER_PERSISTENCE?.requestSave;
+  if (GameConstants.PLAYER_PERSISTENCE) GameConstants.PLAYER_PERSISTENCE.requestSave = () => {};
+  const removeQueue = World.getRemovePlayerQueue();
+  try {
+    const flood = Array.from({ length: NetworkConstants.PACKET_QUEUE_LIMIT + 1 }, () => ({ type: 'interaction_stop' }));
+    await connection.dispatch(flood);
+    assert.deepEqual(channel.closes, [{ code: 1008, reason: 'input limit' }]);
+  } finally {
+    if (GameConstants.PLAYER_PERSISTENCE) GameConstants.PLAYER_PERSISTENCE.requestSave = originalSave;
+    const index = removeQueue.indexOf(connection.player);
+    if (index >= 0) removeQueue.splice(index, 1);
+  }
 });

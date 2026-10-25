@@ -57,7 +57,8 @@ const JEWELLERY = [
     ],
     spent: ItemIds.AMULET_OF_GLORY_T_,
     rechargeable: true,
-    recharge: { heroes: true, quest: "Heroes' Quest" },
+    // The Wiki's 1-in-25,000 eternal glory chance also applies to the trimmed variant.
+    recharge: { heroes: true, quest: "Heroes' Quest", eternalChance: 25000 },
     wildernessLevel: DRAGONSTONE_WILDERNESS_LEVEL,
     rubMessage: "You rub the amulet...",
     emptyMessage: "Your amulet hasn't got any charges left.",
@@ -67,6 +68,7 @@ const JEWELLERY = [
   {
     key: "games",
     noun: "games necklace",
+    unit: "use",
     charged: [
       [ItemIds.GAMES_NECKLACE_8_, 8],
       [ItemIds.GAMES_NECKLACE_7_, 7],
@@ -92,6 +94,7 @@ const JEWELLERY = [
   {
     key: "dueling",
     noun: "ring of dueling",
+    unit: "use",
     charged: [
       [ItemIds.RING_OF_DUELING_8_, 8],
       [ItemIds.RING_OF_DUELING_7_, 7],
@@ -110,8 +113,13 @@ const JEWELLERY = [
       { label: "Emir's Arena", aliases: ["Duel Arena", "PvP Arena"], tile: [3315, 3235, 0] },
       { label: "Castle Wars", tile: [2440, 3090, 0] },
       { label: "Ferox Enclave", tile: [3151, 3636, 0] },
-      // OSRS unlocks it with the Colosseum's Hero title; tsps has no Colosseum yet, so it's open.
-      { label: "Fortis Colosseum", tile: [1793, 3107, 0] },
+      // Unlocked by the Colosseum's Hero title (Wiki); rsprox 723 shows the message box when locked.
+      {
+        label: "Fortis Colosseum",
+        tile: [1793, 3107, 0],
+        colosseumRank: "Hero",
+        lockedMessage: "This destination is unlocked by reaching <col=ff0000>Hero</col> status in the Fortis<br>Colosseum.",
+      },
     ],
   },
   {
@@ -127,8 +135,9 @@ const JEWELLERY = [
     ],
     spent: ItemIds.SKILLS_NECKLACE,
     rechargeable: true,
-    // Legends' Guild totem pole: 6 charges once Legends' Quest is complete (Wiki).
-    recharge: { totem: true, quest: "Legends' Quest" },
+    // Legends' Guild totem pole: 6 charges once Legends' Quest is complete (Wiki). Recharge
+    // Dragonstone needs the quest too, unlike for glories.
+    recharge: { totem: true, quest: "Legends' Quest", spellNeedsQuest: true },
     wildernessLevel: DRAGONSTONE_WILDERNESS_LEVEL,
     emptyMessage: "You will need to recharge your skills necklace before you can use it again.",
     lastChargeMessage: "You use your skills necklace's last charge.",
@@ -160,8 +169,8 @@ const JEWELLERY = [
     ],
     spent: ItemIds.COMBAT_BRACELET,
     rechargeable: true,
-    // Legends' Guild totem pole (Wiki).
-    recharge: { totem: true, quest: "Legends' Quest" },
+    // Legends' Guild totem pole (Wiki); Recharge Dragonstone needs the quest too.
+    recharge: { totem: true, quest: "Legends' Quest", spellNeedsQuest: true },
     wildernessLevel: DRAGONSTONE_WILDERNESS_LEVEL,
     rubMessage: "You rub the bracelet...",
     emptyMessage: "You will need to recharge your combat bracelet before you can use it again.",
@@ -175,7 +184,8 @@ const JEWELLERY = [
   },
   {
     key: "burning",
-    noun: "amulet",
+    noun: "burning amulet",
+    unit: "use",
     charged: [
       [ItemIds.BURNING_AMULET_5_, 5],
       [ItemIds.BURNING_AMULET_4_, 4],
@@ -186,7 +196,7 @@ const JEWELLERY = [
     spent: null,
     rubMessage: "You rub the amulet...",
     emptyMessage: "Your amulet hasn't got any charges left.",
-    lastChargeMessage: "You use your amulet's last charge.",
+    lastChargeMessage: "Your burning amulet crumbles away.",
     // Every destination is in the Wilderness, so each asks before teleporting.
     confirmWilderness: true,
     destinations: [
@@ -197,7 +207,8 @@ const JEWELLERY = [
   },
   {
     key: "digsite",
-    noun: "pendant",
+    noun: "Digsite Pendant",
+    unit: "use",
     charged: [
       [ItemIds.DIGSITE_PENDANT_5_, 5],
       [ItemIds.DIGSITE_PENDANT_4_, 4],
@@ -208,7 +219,7 @@ const JEWELLERY = [
     spent: null,
     rubMessage: "You rub the pendant...",
     emptyMessage: "Your pendant hasn't got any charges left.",
-    lastChargeMessage: "You use your pendant's last charge.",
+    lastChargeMessage: "Your Digsite Pendant crumbles to dust.",
     destinations: [
       { label: "Digsite", tile: [3340, 3445, 0] },
       { label: "Fossil Island", tile: [3763, 3870, 1] },
@@ -229,16 +240,19 @@ const JEWELLERY = [
     spent: null,
     rubMessage: "You rub the necklace...",
     emptyMessage: "Your necklace hasn't got any charges left.",
-    lastChargeMessage: "Your necklace of passage crumbles to dust.",
+    lastChargeMessage: "Your necklace of passage crumbles away.",
     destinations: [
       { label: "Wizards' Tower", tile: [3113, 3177, 0] },
       { label: "The Outpost", tile: [2428, 3349, 0] },
       { label: "Eagles' Eyrie", tile: [3406, 3157, 0] },
+      { label: "Wyrmscraig", tile: [2592, 2220, 0] },
     ],
   },
   {
     key: "slayer",
-    noun: "slayer ring",
+    noun: "Slayer ring",
+    // "Your Slayer ring has 7 charges left." but "has one charge left." (captured).
+    digits: true,
     charged: [
       [ItemIds.SLAYER_RING_8_, 8],
       [ItemIds.SLAYER_RING_7_, 7],
@@ -254,7 +268,7 @@ const JEWELLERY = [
     wildernessLevel: DRAGONSTONE_WILDERNESS_LEVEL,
     rubMessage: "You rub the ring...",
     emptyMessage: "Your ring hasn't got any charges left.",
-    lastChargeMessage: "Your slayer ring crumbles to dust.",
+    lastChargeMessage: "Your Slayer ring has worn out.",
     teleportOptions: ["Rub", "Teleport"],
     // Rub's submenu is actions, not destinations (item params 451-455); Teleport picks one.
     subOps: ["check", "teleport", "master", "partner", "log"],
@@ -280,7 +294,8 @@ const JEWELLERY = [
     spent: null,
     emptyMessage: "Your ring hasn't got any charges left.",
     lastChargeMessage: "Your ring of returning crumbles to dust.",
-    // A single destination: rubbing teleports straight to the respawn point.
+    // A single destination: rubbing teleports straight to the respawn point (Wiki). tsps has no
+    // selectable respawn points yet, so every player respawns at DEFAULT_LOCATION.
     destinations: [
       {
         label: "Respawn point",
@@ -301,7 +316,7 @@ for (const piece of JEWELLERY) {
 
 /** The ring of wealth's teleports; RingOfWealth.plugin.js handles the ring itself. */
 const RING_OF_WEALTH_DESTINATIONS = [
-  { label: "Grand Exchange", tile: [3163, 3485, 0] },
+  { label: "Grand Exchange", tile: [3163, 3478, 0] },
   { label: "Miscellania", tile: [2539, 3864, 0] },
   { label: "Falador Park", tile: [2994, 3377, 0] },
   { label: "Dondakan", tile: [2824, 10168, 0] },

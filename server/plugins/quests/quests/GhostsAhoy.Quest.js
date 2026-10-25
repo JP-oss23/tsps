@@ -1020,12 +1020,13 @@ module.exports = function registerGhostsAhoyQuest(api) {
         event.handled = true;
         return;
       case "Ct4wPs":
-        // The 25-token fare covers the return trip; sailing back is free.
-        if (!atDragontooth(player) && player.getInventory().getAmount(ECTO_TOKEN) >= 25) {
+        // The 25-token fare covers the return trip; sailing back is free. Short of it, no voyage.
+        event.handled = true;
+        if (!atDragontooth(player)) {
+          if (player.getInventory().getAmount(ECTO_TOKEN) < 25) return;
           player.getInventory().deleteNumber(ECTO_TOKEN, 25);
         }
         sailToDragontooth(player);
-        event.handled = true;
         return;
       case "d8PAqv":
         if (!atDragontooth(player) && player.getInventory().getAmount(ECTO_TOKEN) >= 500) {

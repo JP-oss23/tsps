@@ -36,6 +36,7 @@ module.exports = {
     api.persistAttribute(Aerial.ATTRIBUTE);
     api.persistAttribute("hunter.herbiboars");
     api.onCustomEvent("hunter:success", Rumours.success);
+    api.onCustomEvent("hunter:rumours-completed", Rumours.completedCount);
     api.onPlayerLogin(Runtime.login);
     api.onCustomEvent("agent:advance-time", Birdhouses.advanceTime);
     api.onPlayerLogout(Runtime.cleanup);

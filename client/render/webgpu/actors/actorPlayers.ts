@@ -1,3 +1,4 @@
+import { packedActorBounds, type ActorBounds } from "../../ActorVisibility";
 import { playerInterpolation } from "../../player/PlayerInterpolation";
 import { applyInterpolatedFrames, interpolationFrame, interpolationKey, type ActorInterpolation } from "../../../rs/model/seq/FrameInterpolation";
 import type { OsrsClient } from "../../../game/OsrsClient";
@@ -35,6 +36,47 @@ export interface PosedActorGeometry {
     matrices?: Float32Array;
     /** The pose's key, shared by every player in the same pose this frame. */
     poseKey?: string;
+    bounds?: ActorBounds;
+}
+
+/** One unshared face corner per label: shared by player and NPC rest meshes. */
+export function buildLabelledActorRestMesh(
+    key: string,
+    baseModel: Model,
+    rig: LabelRig,
+    textureLoader: TextureLoader,
+    textureIdIndexMap: Map<number, number>,
+): PosedActorGeometry {
+    const vertexLabel = rig.vertexLabelOf();
+    const normals = buildActorNormals(baseModel);
+    const build = (alpha: boolean) => {
+        const faces = getModelFacesFiltered(baseModel, textureLoader, alpha);
+        const sceneBuf = new SceneBuffer(textureLoader, textureIdIndexMap, faces.length * 3 + 16, true);
+        if (faces.length > 0) sceneBuf.addModel(baseModel, faces, undefined, false, normals);
+        const labels = new Uint32Array(faces.length * 3);
+        for (let i = 0; i < faces.length; i++) {
+            const face = faces[i].index;
+            labels[i * 3] = vertexLabel[baseModel.indices1[face]] + 1;
+            labels[i * 3 + 1] = vertexLabel[baseModel.indices2[face]] + 1;
+            labels[i * 3 + 2] = vertexLabel[baseModel.indices3[face]] + 1;
+        }
+        return {
+            vertices: sceneBuf.vertexBuf.byteArray() as Uint8Array,
+            indices: Int32Array.from(sceneBuf.indices),
+            labels,
+        };
+    };
+    const opaque = build(false);
+    const alpha = build(true);
+    return {
+        key,
+        opaqueVertices: opaque.vertices,
+        opaqueIndices: opaque.indices,
+        opaqueLabels: opaque.labels,
+        alphaVertices: alpha.vertices,
+        alphaIndices: alpha.indices,
+        alphaLabels: alpha.labels,
+    };
 }
 
 interface BaseAppearance {
@@ -76,7 +118,7 @@ export class PlayerPoseGeometry {
      * Returns the posed geometry for one player this frame, or undefined while it cannot pose.
      * `allowGpu` false forces a CPU-posed mesh (when the frame's pose rows are full).
      */
-    resolve(pid: number, allowGpu: boolean = true): PosedActorGeometry | undefined {
+    resolve(pid: number, allowGpu: boolean = true, visible?: (geometry: PosedActorGeometry) => boolean): PosedActorGeometry | undefined {
         const pe = this.client.playerEcs;
         const actionSeqId = pe.getAnimSeqId(pid) | 0;
         const movementSeqId = pe.getAnimMovementSeqId(pid) | 0;
@@ -134,6 +176,10 @@ export class PlayerPoseGeometry {
         const appKey = app.getCacheKey?.() ?? this.appearanceFallbackKey(app);
         const key = `${appKey}|${seqId}|${frameIdx}${cycleKey}${overlayKey}`;
 
+        const cpuPose = this.geomCache.get(key);
+        // Only final CPU poses have bounds; rest meshes do not bound a GPU label animation.
+        if (cpuPose && (!allowGpu || this.poseCache.get(key) === null) && visible && !visible(cpuPose)) return undefined;
+
         if (allowGpu) {
             const matrices = this.poseFor(key, base, { seqId, frameIdx, interpolation, overlaySeqId, overlayFrameIdx });
             const rest = matrices ? this.restMeshFor(appKey, base.baseModel) : undefined;
@@ -147,15 +193,17 @@ export class PlayerPoseGeometry {
             return cached;
         }
 
-        const geometry = this.build(base.baseModel, base.baseCenterX, base.baseCenterZ, {
+        const built = this.build(base.baseModel, base.baseCenterX, base.baseCenterZ, {
             seqId,
             frameIdx,
             interpolation,
             overlaySeqId,
             overlayFrameIdx,
         });
-        if (!geometry) return undefined;
+        if (!built) return undefined;
+        const [geometry, animated] = built;
         geometry.key = key;
+        if (!animated) return geometry;
         this.geomCache.set(key, geometry);
         while (this.geomCache.size > MAX_CPU_GEOMETRY_ENTRIES) {
             const oldest = this.geomCache.keys().next().value as string | undefined;
@@ -186,6 +234,8 @@ export class PlayerPoseGeometry {
             return cached ?? undefined;
         }
         let matrices: Float32Array | null = null;
+        // A frame still streaming in leaves the rest pose: draw it, but don't keep it.
+        let keep = true;
         try {
             const rig = this.rigFor(base.baseModel);
             // The CPU path re-centres the posed model on the base centre; GPU poses assume none.
@@ -196,7 +246,7 @@ export class PlayerPoseGeometry {
                     : undefined;
                 if (seqType && !seqType.isSkeletalSeq?.() && !overlayType?.isSkeletalSeq?.()) {
                     const pose = new LabelPose(rig);
-                    this.applySequenceToModel(
+                    keep = this.applySequenceToModel(
                         pose,
                         anim.seqId,
                         anim.frameIdx,
@@ -210,6 +260,7 @@ export class PlayerPoseGeometry {
         } catch {
             matrices = null;
         }
+        if (!keep) return matrices ?? undefined;
         this.poseCache.set(key, matrices);
         while (this.poseCache.size > MAX_POSE_ENTRIES) {
             this.poseCache.delete(this.poseCache.keys().next().value as string);
@@ -241,36 +292,7 @@ export class PlayerPoseGeometry {
         const rig = this.rigFor(baseModel);
         if (!rig) return undefined;
         const textureLoader = this.client.textureLoader as TextureLoader;
-        const vertexLabel = rig.vertexLabelOf();
-        const normals = buildActorNormals(baseModel);
-        const build = (alpha: boolean) => {
-            const faces = getModelFacesFiltered(baseModel, textureLoader, alpha);
-            const sceneBuf = new SceneBuffer(textureLoader, this.textureIdIndexMap, faces.length * 3 + 16, true);
-            if (faces.length > 0) sceneBuf.addModel(baseModel, faces, undefined, false, normals);
-            const labels = new Uint32Array(faces.length * 3);
-            for (let i = 0; i < faces.length; i++) {
-                const face = faces[i].index;
-                labels[i * 3] = vertexLabel[baseModel.indices1[face]] + 1;
-                labels[i * 3 + 1] = vertexLabel[baseModel.indices2[face]] + 1;
-                labels[i * 3 + 2] = vertexLabel[baseModel.indices3[face]] + 1;
-            }
-            return {
-                vertices: sceneBuf.vertexBuf.byteArray() as Uint8Array,
-                indices: Int32Array.from(sceneBuf.indices),
-                labels,
-            };
-        };
-        const opaque = build(false);
-        const alpha = build(true);
-        const rest: PosedActorGeometry = {
-            key,
-            opaqueVertices: opaque.vertices,
-            opaqueIndices: opaque.indices,
-            opaqueLabels: opaque.labels,
-            alphaVertices: alpha.vertices,
-            alphaIndices: alpha.indices,
-            alphaLabels: alpha.labels,
-        };
+        const rest = buildLabelledActorRestMesh(key, baseModel, rig, textureLoader, this.textureIdIndexMap);
         this.restCache.set(key, rest);
         while (this.restCache.size > MAX_REST_MESH_ENTRIES) {
             this.restCache.delete(this.restCache.keys().next().value as string);
@@ -298,7 +320,7 @@ export class PlayerPoseGeometry {
                 npcTypeLoader: mv.npcTypeLoader,
                 seqTypeLoader: mv.seqTypeLoader,
                 seqFrameLoader: mv.seqFrameLoader,
-                skeletalSeqLoader: mv.loaderFactory?.getSkeletalSeqLoader?.(),
+                skeletalSeqLoader: mv.skeletalSeqLoader,
                 varManager: mv.varManager,
                 basTypeLoader: mv.basTypeLoader,
             });
@@ -351,10 +373,10 @@ export class PlayerPoseGeometry {
             overlaySeqId?: number;
             overlayFrameIdx?: number;
         },
-    ): PosedActorGeometry | undefined {
+    ): [PosedActorGeometry, boolean] | undefined {
         try {
             const model = Model.copyAnimated(baseModel, false, true);
-            this.applySequenceToModel(
+            const animated = this.applySequenceToModel(
                 model,
                 anim.seqId,
                 anim.frameIdx,
@@ -380,23 +402,24 @@ export class PlayerPoseGeometry {
             if (opaqueFaces.length > 0) {
                 this.opaqueSceneBuf.addModel(model, opaqueFaces, undefined, true, actorNormals);
             }
-            const opaqueVertices = this.opaqueSceneBuf.vertexBuf.byteArray();
+            const opaqueVertices = new Uint8Array(this.opaqueSceneBuf.vertexBuf.byteArray());
             const opaqueIndices = new Int32Array(this.opaqueSceneBuf.indices);
 
             this.resetSceneBuf(this.alphaSceneBuf);
             if (alphaFaces.length > 0) {
                 this.alphaSceneBuf.addModel(model, alphaFaces, undefined, true, actorNormals);
             }
-            const alphaVertices = this.alphaSceneBuf.vertexBuf.byteArray();
+            const alphaVertices = new Uint8Array(this.alphaSceneBuf.vertexBuf.byteArray());
             const alphaIndices = new Int32Array(this.alphaSceneBuf.indices);
 
-            return {
+            return [{
                 key: "",
                 opaqueVertices,
                 opaqueIndices,
                 alphaVertices,
                 alphaIndices,
-            };
+                bounds: packedActorBounds(opaqueVertices, alphaVertices),
+            }, animated];
         } catch {
             return undefined;
         }
@@ -420,7 +443,7 @@ export class PlayerPoseGeometry {
         overlaySeqId: number | undefined,
         overlayFrameIdx: number | undefined,
         interpolation: ActorInterpolation | undefined,
-    ): void {
+    ): boolean {
         try {
             const seqType = this.client.seqTypeLoader.load(seqId | 0);
             const overlayId =
@@ -431,12 +454,12 @@ export class PlayerPoseGeometry {
                 typeof overlayFrameIdx === "number" && Number.isFinite(overlayFrameIdx)
                     ? overlayFrameIdx | 0
                     : -1;
-            if (!seqType) return;
+            if (!seqType) return false;
             const overlayType =
                 overlayId >= 0 && overlayFrame >= 0
                     ? this.client.seqTypeLoader.load(overlayId)
                     : undefined;
-            this.applySequenceTransformations(
+            return this.applySequenceTransformations(
                 model,
                 seqType as any,
                 seqId | 0,
@@ -446,7 +469,9 @@ export class PlayerPoseGeometry {
                 overlayFrame,
                 interpolation,
             );
-        } catch {}
+        } catch {
+            return false;
+        }
     }
 
     private applySingleSequence(
@@ -458,7 +483,7 @@ export class PlayerPoseGeometry {
     ): boolean {
         if (!seqType) return false;
         if (seqType.isSkeletalSeq?.()) {
-            const skeletal = this.client.loaderFactory?.getSkeletalSeqLoader?.()?.load(seqType.skeletalId);
+            const skeletal = this.client.skeletalSeqLoader?.load(seqType.skeletalId);
             if (!skeletal) return false;
             const duration = this.effectiveSkeletalDuration(seqType, seqId | 0);
             const local = Math.max(0, frameIdx | 0) % Math.max(1, duration | 0);
@@ -503,7 +528,7 @@ export class PlayerPoseGeometry {
 
         const baseCached = !!baseType.isSkeletalSeq?.();
         const overlayCached = !!overlayType.isSkeletalSeq?.();
-        const skeletalLoader = this.client.loaderFactory?.getSkeletalSeqLoader?.();
+        const skeletalLoader = this.client.skeletalSeqLoader;
 
         if (baseCached) {
             const baseSkeletal = skeletalLoader?.load(baseType.skeletalId);

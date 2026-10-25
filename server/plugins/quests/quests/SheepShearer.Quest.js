@@ -31,21 +31,52 @@ module.exports = function registerSheepShearerQuest(api) {
   const COINS_ITEM_ID = ItemIdentifiers.COINS;
 
   const SHEAR_ANIMATION = new Animation(893);
+  const THE_THING_SHEAR_ANIMATION = new Animation(3570);
+  const SHEAR_SOUND = 761;
+  const SHEAR_SOUND_DELAY = 10;
+  const THE_THING_SHEAR_SOUND = 760;
+  const THE_THING_ESCAPE_SOUND = 686;
 
-  /** Shearable variants verified against the revision 241 cache. */
-  const SHEARABLE_SHEEP_IDS = new Set([
-    NpcIdentifiers.SHEEP_18,
-    NpcIdentifiers.SHEEP_19,
-    NpcIdentifiers.SHEEP_20,
-    NpcIdentifiers.SHEEP_21,
-    NpcIdentifiers.SHEEP_BALD_BLACK_HEAD,
-    NpcIdentifiers.SHEEP_3,
-    NpcIdentifiers.SHEEP_BALD_WHITE_HEAD,
-    NpcIdentifiers.SHEEP_5,
-    NpcIdentifiers.SHEEP_6,
-    NpcIdentifiers.SHEEP_7,
-    NpcIdentifiers.SHEEP_8,
+  // Shearing (rsprox captures 1619, 1620, 1621, 3276): the wool, its message and the sheared
+  // sheep come two ticks after the animation; The Thing (1620, 1718) rears up a tick after it
+  // and gets away on the third.
+  const SHEAR_DELAY_TICKS = 2;
+  const THE_THING_REAR_TICKS = 1;
+  const THE_THING_ESCAPE_TICKS = 3;
+  // Wool grows back after 50 ticks, 100 in Zanaris, where a quarter of attempts fail (Wiki).
+  const WOOL_REGROW_TICKS = 50;
+  const ZANARIS_WOOL_REGROW_TICKS = 100;
+  const ZANARIS_ESCAPE_CHANCE = 0.25;
+
+  /**
+   * The revision-241 shearable sheep, each mapped to the sheared npc of the same
+   * wool colour. The pairs are the cache gamevals' matching SHEEPUNSHEERED and
+   * SHEEPSHEERED names.
+   */
+  const SHEARED_SHEEP_BY_ID = new Map([
+    [NpcIdentifiers.SHEEP_18, NpcIdentifiers.SHEEP_2],
+    [NpcIdentifiers.SHEEP_19, NpcIdentifiers.SHEEP_4],
+    [NpcIdentifiers.SHEEP_20, NpcIdentifiers.SHEEP_9],
+    [NpcIdentifiers.SHEEP_21, NpcIdentifiers.SHEEP_10],
+    [NpcIdentifiers.SHEEP_BALD_BLACK_HEAD, NpcIdentifiers.SHEEP_11],
+    [NpcIdentifiers.SHEEP_3, NpcIdentifiers.SHEEP_12],
+    [NpcIdentifiers.SHEEP_BALD_WHITE_HEAD, NpcIdentifiers.SHEEP_13],
+    [NpcIdentifiers.SHEEP_5, NpcIdentifiers.SHEEP_14],
+    [NpcIdentifiers.SHEEP_6, NpcIdentifiers.SHEEP_15],
+    [NpcIdentifiers.SHEEP_7, NpcIdentifiers.SHEEP_16],
+    [NpcIdentifiers.SHEEP_8, NpcIdentifiers.SHEEP_17],
   ]);
+  const SHEARED_SHEEP_IDS = new Set(SHEARED_SHEEP_BY_ID.values());
+
+  /**
+   * Zanaris' sheep (fairy_sheep, fairy_sheep2) have no Shear option and take shears only;
+   * both turn into fairy_sheepsheered, the light-grey sheared model going unused (Wiki).
+   */
+  const ZANARIS_SHEARED_SHEEP_BY_ID = new Map([
+    [NpcIdentifiers.SHEEP_25, NpcIdentifiers.SHEEP_27],
+    [NpcIdentifiers.SHEEP_26, NpcIdentifiers.SHEEP_27],
+  ]);
+  const ZANARIS_SHEARED_SHEEP_ID = NpcIdentifiers.SHEEP_27;
 
   const SAW_THING_ATTRIBUTE = "sheep-shearer:saw-thing";
   const FINAL_DELIVERY_ATTRIBUTE = "sheep-shearer:final-delivery";
@@ -124,8 +155,12 @@ module.exports = function registerSheepShearerQuest(api) {
   }
 
   /** Shears used on (or the Shear option of) a normal sheep yields one wool. */
-  function shearSheep(player, npc) {
-    if (!npc || shornSheep.has(npc)) return;
+  function shearSheep(player, npc, zanaris = false) {
+    if (!npc) return;
+    if (shornSheep.has(npc)) {
+      alreadyShorn(player, npc);
+      return;
+    }
     if (!hasShears(player)) {
       player.sendMessage("You need a set of shears to do this.");
       return;
@@ -134,25 +169,63 @@ module.exports = function registerSheepShearerQuest(api) {
       player.sendMessage("You don't have enough inventory space to hold the wool.");
       return;
     }
+    shornSheep.add(npc);
     player.performAnimation(SHEAR_ANIMATION);
+    player.getPacketSender().sendSound(SHEAR_SOUND, 1, SHEAR_SOUND_DELAY);
+    TaskManager.submit(new CountdownTask(npc, SHEAR_DELAY_TICKS, () => finishShearing(player, npc, zanaris)));
+  }
+
+  function finishShearing(player, npc, zanaris) {
+    if (!player.isRegistered() || !npc.isRegistered()) {
+      shornSheep.delete(npc);
+      return;
+    }
+    if (zanaris && Math.random() < ZANARIS_ESCAPE_CHANCE) {
+      shornSheep.delete(npc);
+      player.sendMessage("The sheep manages to get away from you!");
+      return;
+    }
+    if (player.getInventory().isFull()) {
+      shornSheep.delete(npc);
+      player.sendMessage("You don't have enough inventory space to hold the wool.");
+      return;
+    }
     player.getInventory().adds(WOOL_ITEM_ID, 1);
     player.sendMessage("You get some wool.");
-    shornSheep.add(npc);
-    const whiteSheep = npc.getDefinition().getId() >= NpcIdentifiers.SHEEP_21;
-    npc.setNpcTransformationId(whiteSheep ? NpcIdentifiers.SHEEP_17 : NpcIdentifiers.SHEEP_16);
-    TaskManager.submit(new CountdownTask(npc, 100, () => {
+    const baseId = npc.getDefinition().getId();
+    const shearedId = zanaris ? ZANARIS_SHEARED_SHEEP_BY_ID.get(baseId) : SHEARED_SHEEP_BY_ID.get(baseId);
+    npc.setNpcTransformationId(shearedId ?? -1);
+    TaskManager.submit(new CountdownTask(npc, zanaris ? ZANARIS_WOOL_REGROW_TICKS : WOOL_REGROW_TICKS, () => {
       shornSheep.delete(npc);
       if (npc.isRegistered()) npc.setNpcTransformationId(-1);
     }));
   }
 
+  /** Shears used on a sheep with no wool yet (rsprox capture 1621). */
+  function alreadyShorn(player, npc) {
+    player.sendMessage("This sheep has already been shorn.");
+    npc.forceChat("Baa!");
+  }
+
   /** Shearing "The Thing" escapes and, once the quest is underway, flags it seen. */
-  function shearStrangeSheep(player) {
+  function shearStrangeSheep(player, npc) {
     if (!hasShears(player)) {
       player.sendMessage("You need a pair of shears to shear the sheep.");
       return;
     }
     player.performAnimation(SHEAR_ANIMATION);
+    player.getPacketSender().sendSound(THE_THING_SHEAR_SOUND, 1, 0);
+    if (npc) {
+      TaskManager.submit(new CountdownTask(npc, THE_THING_REAR_TICKS, () => {
+        npc.performAnimation(THE_THING_SHEAR_ANIMATION);
+        if (player.isRegistered()) player.getPacketSender().sendSound(THE_THING_ESCAPE_SOUND, 1, 0);
+      }));
+    }
+    TaskManager.submit(new CountdownTask(player, THE_THING_ESCAPE_TICKS, () => theThingEscapes(player)));
+  }
+
+  function theThingEscapes(player) {
+    if (!player.isRegistered()) return;
     player.sendMessage("The... whatever it is... manages to get away from you!");
     const stage = quest.getStage(player);
     if (stage >= STAGE_STARTED && stage < STAGE_COMPLETE) {
@@ -211,11 +284,20 @@ module.exports = function registerSheepShearerQuest(api) {
     if (event.text === "Yes, okay. I can do that." && pendingStart.has(event.player)) {
       event.after = () => {
         pendingStart.delete(event.player);
-        if (quest.getStage(event.player) === 0) quest.setStage(event.player, STAGE_STARTED);
+        if (quest.getStage(event.player) !== 0) return;
+        // Fred's start gives shears unless the player already has them or has all 20 balls.
+        // Do not commit the start when that handout cannot fit.
+        if (!hasShears(event.player) && woolBalls(event.player) < TOTAL_BALLS_OF_WOOL
+          && event.player.getInventory().isFull()) {
+          event.player.getInventory().full();
+          return;
+        }
+        quest.setStage(event.player, STAGE_STARTED);
       };
     }
     const remaining = remainingWool(quest.getStage(event.player));
     event.text = event.text.replace("20 more balls of wool", `${remaining} more ${remaining === 1 ? "ball" : "balls"} of wool`)
+      .replace("[1-19]", String(remaining))
       .replace("[#]", String(remaining));
   }
 
@@ -284,13 +366,14 @@ module.exports = function registerSheepShearerQuest(api) {
   function handleNpcInteraction(event) {
     const action = (event.definition?.getActions?.() ?? [])[event.clickType - 1];
     if (String(action).toLowerCase() !== "shear") return;
+    const npc = event.npc ?? event.target;
     if (event.npcId === STRANGE_SHEEP_NPC_ID) {
-      shearStrangeSheep(event.player);
+      shearStrangeSheep(event.player, npc);
       event.handled = true;
       return;
     }
-    if (SHEARABLE_SHEEP_IDS.has(event.npcId)) {
-      shearSheep(event.player, event.npc ?? event.target);
+    if (SHEARED_SHEEP_BY_ID.has(event.npcId)) {
+      shearSheep(event.player, npc);
       event.handled = true;
     }
   }
@@ -298,13 +381,19 @@ module.exports = function registerSheepShearerQuest(api) {
   function handleItemOnNpc(event) {
     if (event.itemId !== SHEARS_ITEM_ID) return;
     const npcId = event.npcId ?? event.target?.getId?.();
+    const npc = event.npc ?? event.target;
     if (npcId === STRANGE_SHEEP_NPC_ID) {
-      shearStrangeSheep(event.player);
+      shearStrangeSheep(event.player, npc);
       event.handled = true;
       return;
     }
-    if (SHEARABLE_SHEEP_IDS.has(npcId)) {
-      shearSheep(event.player, event.npc ?? event.target);
+    if (SHEARED_SHEEP_BY_ID.has(npcId) || ZANARIS_SHEARED_SHEEP_BY_ID.has(npcId)) {
+      shearSheep(event.player, npc, ZANARIS_SHEARED_SHEEP_BY_ID.has(npcId));
+      event.handled = true;
+      return;
+    }
+    if ((SHEARED_SHEEP_IDS.has(npcId) || npcId === ZANARIS_SHEARED_SHEEP_ID) && npc) {
+      alreadyShorn(event.player, npc);
       event.handled = true;
     }
   }

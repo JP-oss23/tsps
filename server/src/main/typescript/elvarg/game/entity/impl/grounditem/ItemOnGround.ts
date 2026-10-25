@@ -16,6 +16,8 @@ export class ItemOnGround {
     goesGlobal: boolean;
     pendingRemoval: boolean;
     respawnTimer: number = -1;
+    /** World cycle in which this item last aged in {@link process}. */
+    agedCycle: number = -1;
     oldAmount: number;
     privateArea: PrivateArea;
     /** A static world spawn: never despawns on its own and is visible to everyone.
@@ -37,6 +39,7 @@ export class ItemOnGround {
     }
 
     process() {
+        this.agedCycle = World.getProcessCycle();
         this.incrementTick();
         switch (this.state) {
             case State.SEEN_BY_EVERYONE:
@@ -80,6 +83,14 @@ export class ItemOnGround {
             default:
                 break;
         }
+    }
+
+    public getAgedCycle(): number {
+        return this.agedCycle;
+    }
+
+    public getTiming() {
+        return ItemOnGroundManager.getTiming(this);
     }
 
     public getPosition(): Location {

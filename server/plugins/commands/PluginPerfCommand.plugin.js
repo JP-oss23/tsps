@@ -1,6 +1,5 @@
 const fs = require("fs");
 const path = require("path");
-const { PlayerRights } = require("../../src/main/typescript/elvarg/game/model/rights/PlayerRights");
 
 let pluginApi;
 let World;
@@ -62,9 +61,9 @@ function streamPluginPerfToPlayer(player, limit = DEFAULT_LIMIT) {
   }
 
   player.sendMessage(
-    `[pluginperf] Top ${rows.length} plugins (total/avg/max ms)`
+    `[pluginperf] Top ${rows.length} plugins (cumulative total/avg call/max call ms)`
   );
-  logLines.push(`${timestamp} [pluginperf] Top ${rows.length} plugins (total/avg/max ms)`);
+  logLines.push(`${timestamp} [pluginperf] Top ${rows.length} plugins (cumulative total/avg call/max call ms)`);
 
   for (const row of rows) {
     const line = `${row.pluginName}: ${row.totalMs.toFixed(1)}/${row.avgMs.toFixed(
@@ -73,7 +72,7 @@ function streamPluginPerfToPlayer(player, limit = DEFAULT_LIMIT) {
       1
     )}ms c=${row.topEventCalls} avg=${row.topEventAvgMs.toFixed(
       3
-    )}ms p95=${row.topEventP95Ms.toFixed(3)}ms)`;
+    )}ms p95=${row.topEventP95Ms.toFixed(3)}ms) slowest=${row.maxEventName}:${row.maxHandlerName}`;
     player.sendMessage(line);
     logLines.push(`${timestamp} ${line}`);
   }
@@ -121,6 +120,7 @@ function streamServerPerfToPlayer(player, limitTicks = 60) {
 module.exports = {
   name: "PluginPerfCommand",
   register(api) {
+    const { PlayerRights } = api.core;
     pluginApi = api;
     World = api.getWorld();
     ServerPerf = api.getServerPerf();

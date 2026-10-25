@@ -6,14 +6,19 @@
 //  - every prose condition on a page the quest drives must be answerable without
 //    throwing (catches typo'd condition text / broken inventory reads).
 //
-// This is the "all dialogue branches work" check: a quest whose start/report/hand-in
-// variant names drifted from npc-dialogues.json fails here.
+// This checks variant references in the surveyed fixture states; it does not prove
+// that all dialogue branches are playable or replace registered-runner/native tests.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { test } = require('node:test');
+const { test, before } = require('node:test');
 const { Server } = require('../dist/Server');
 Server.installProductionPathResolver();
+// Quest stage updates render cache-backed quest-list metadata. Keep one live store
+// for the whole file so cached definitions and RegionManager share its lifetime.
+before(async () => {
+  await require('../dist/game/cache/CachePipeline').CachePipeline.initialize(require('node:path').resolve(__dirname, '..'));
+});
 
 const { PluginManager } = require('../dist/plugins/PluginManager');
 
@@ -42,25 +47,27 @@ for (const [npcId, entries] of Object.entries(index)) {
   if (pages.length) npcPages.set(Number(npcId), pages);
 }
 
-function fakePlayer(stage) {
+function fakePlayer(stage, attributes = {}) {
   const amount = () => 0;
   const equipmentItem = { getId: () => -1, getName: () => '' };
   const target = {
-    // Cross-quest probes (a quest reading another quest's stage to defer a shared
-    // NPC) read as "not started"; the quest under test reads the injected stage.
+    // Stage proxies below supply the quest under test and completed prerequisites;
+    // optional attributes activate selectors with an additional sub-state gate.
     getAttribute: (key) =>
-      String(key) === 'quest.shield_of_arrav.stage' ? 0 : String(key).endsWith('.stage') ? stage : undefined,
+      String(key) === 'quest.shield_of_arrav.stage' ? 0 : String(key).endsWith('.stage') ? stage : attributes[key],
     setAttribute: () => {},
     getInventory: () => ({
       getAmount: amount,
+      getFreeSlots: () => 28,
       isFull: () => false,
       contains: () => false,
       adds: () => true,
       deleteNumber: () => true,
       addItem: () => true,
     }),
-    getEquipment: () => ({ get: () => equipmentItem, hasItem: () => false }),
-    getSkillManager: () => ({ getCurrentLevel: () => 99, getMaxLevel: () => 99 }),
+    getEquipment: () => ({ get: () => equipmentItem, getItems: () => [], hasItem: () => false }),
+    getBanks: () => [],
+    getSkillManager: () => ({ getCurrentLevel: () => 99, getMaxLevel: () => 99, getCombatLevel: () => 126 }),
     getLocation: () => ({ getX: () => 0, getY: () => 0, getZ: () => 0 }),
     getPacketSender: () => new Proxy({}, { get: () => () => {} }),
     getDialogueManager: () => ({ reset: () => {}, startDialogues: () => {} }),
@@ -89,12 +96,22 @@ function questFiles() {
 function loadQuest(name) {
   const handlers = { variant: [], condition: [] };
   const noop = () => {};
+  let targetStageKey = null;
   const base = {
     core: PluginManager.getCoreApi(),
     onNpcDialogueVariant: (h) => handlers.variant.push(h),
     onNpcDialogueCondition: (h) => handlers.condition.push(h),
     onCustomEvent: noop,
-    persistAttribute: noop,
+    persistAttribute: (key) => {
+      if (!targetStageKey && /^quest\..+\.stage$/.test(String(key))) targetStageKey = key;
+    },
+    emitCustomEvent: (eventName, request) => {
+      if (!request?.key) return;
+      const stage = Number(request.player?.__stage) || 0;
+      const own = targetStageKey === `quest.${request.key}.stage`;
+      if (eventName === 'quest:is-complete') request.complete = own ? stage >= 100 : true;
+      if (eventName === 'quest:is-started') request.started = own ? stage > 0 : false;
+    },
   };
   const api = new Proxy(base, {
     get(target, prop) {
@@ -105,8 +122,21 @@ function loadQuest(name) {
   require(path.join(serverRoot, 'plugins/quests/quests', `${name}.Quest`))(api);
   return {
     name,
-    selectVariant: handlers.variant.at(-1),
-    answerCondition: handlers.condition.at(-1),
+    targetStageKey,
+    selectVariant: handlers.variant.length ? (event) => {
+      for (const handler of handlers.variant) {
+        const result = handler(event);
+        if (result) return result;
+      }
+      return null;
+    } : undefined,
+    answerCondition: handlers.condition.length ? (event) => {
+      for (const handler of handlers.condition) {
+        const result = handler(event);
+        if (typeof result === 'boolean') return result;
+      }
+      return null;
+    } : undefined,
   };
 }
 
@@ -133,7 +163,10 @@ for (const name of questFiles()) {
     const quest = loadQuest(name);
     if (!quest.selectVariant) return; // transcript-only quests use NpcDialogues defaults
     const pagesUsed = new Set();
-    const player = fakePlayer(0);
+    // DS2's only variant selector serves the Oneiromancer after Bob's dream
+    // briefing. Its ordinary quest stage alone cannot activate that selector.
+    const player = fakePlayer(0, name === 'DragonSlayerII'
+      ? { 'dragon-slayer-ii:dream-progress': 2 } : {});
     let selections = 0;
 
     for (const [npcId, pages] of npcPages) {
@@ -142,12 +175,11 @@ for (const name of questFiles()) {
         const stagePlayer = new Proxy(player, {
           get(obj, prop) {
             if (prop === 'getAttribute') {
-              return (key) =>
-                String(key) === 'quest.shield_of_arrav.stage'
-                  ? 0
-                  : String(key).endsWith('.stage')
-                    ? stage
-                    : undefined;
+              return (key) => {
+                if (key === quest.targetStageKey) return stage;
+                if (String(key) === 'quest.shield_of_arrav.stage') return 0;
+                return String(key).endsWith('.stage') ? 1000 : player.getAttribute(key);
+              };
             }
             return obj[prop];
           },
@@ -186,9 +218,22 @@ for (const name of questFiles()) {
     assert.ok(selections > 0, `${name}: selector never returned a variant (stale npc ids?)`);
 
     if (quest.answerCondition) {
+      player.__stage = 0;
+      const conditionPlayer = new Proxy(player, {
+        get(obj, prop) {
+          if (prop === 'getAttribute') {
+            return (key) => {
+              if (key === quest.targetStageKey) return 0;
+              if (String(key) === 'quest.shield_of_arrav.stage') return 0;
+              return String(key).endsWith('.stage') ? 1000 : player.getAttribute(key);
+            };
+          }
+          return obj[prop];
+        },
+      });
       for (const text of collectConditionTexts(pagesUsed)) {
         assert.doesNotThrow(
-          () => quest.answerCondition({ npcId: 0, player, text, stepId: null }),
+          () => quest.answerCondition({ npcId: 0, player: conditionPlayer, text, stepId: null }),
           `${name}: answering condition "${text}" threw`
         );
       }

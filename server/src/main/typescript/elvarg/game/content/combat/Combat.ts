@@ -5,8 +5,9 @@ import type { Mobile } from "../../entity/impl/Mobile";
 import type { Player } from "../../entity/impl/player/Player";
 import { CoordinateState } from "../../entity/impl/npc/NPCMovementCoordinator";
 import { SecondsTimer } from "../../model/SecondsTimer";
+import { PoisonClock } from "./PoisonClock";
 import { StatementDialogue } from "../../model/dialogues/entries/impl/StatementDialogue";
-import { Stopwatch } from "../../../util/Stopwatch";
+import { TickStopwatch } from "../../../util/TickStopwatch";
 import { ServerPerf } from "../../../util/ServerPerf";
 import { World } from "../../World";
 import { CombatConstants } from "./CombatConstants";
@@ -14,6 +15,7 @@ import { CombatFactory, CanAttackResponse } from "./CombatFactory";
 import { CombatRange } from "./CombatRange";
 import { CombatSpecial } from "./CombatSpecial";
 import { SpecialAttackTargetingResolver } from "./SpecialAttackTargeting";
+import { AccuracyFormulasDpsCalc } from "./formula/AccuracyFormulasDpsCalc";
 import { CombatType } from "./CombatType";
 import type { CombatSpell } from "./magic/CombatSpell";
 import type { CombatMethod } from "./method/CombatMethod";
@@ -45,9 +47,10 @@ const COMBAT_TARGET_PLAYER_VARP = 1075;
 export class Combat {
     private readonly hitQueue = new HitQueue(this.character);
     private damageMap: Map<Player, HitDamageCache> | null = null;
-    private readonly lastAttack = new Stopwatch();
+    private readonly lastAttack = new TickStopwatch();
     // Most NPCs never use these; each SecondsTimer also holds a Stopwatch, so allocate on first use.
     private poisonImmunityTimer: SecondsTimer | null = null;
+    private poisonClock: PoisonClock | null = null;
     private fireImmunityTimer: SecondsTimer | null = null;
     private teleblockTimer: SecondsTimer | null = null;
     private prayerBlockTimer: SecondsTimer | null = null;
@@ -566,16 +569,24 @@ export class Combat {
     public setAmmunition(ammunition: Ammunition | null): void { this.ammunition = ammunition; }
     public getRangeAmmoData(): RangedData { return this.ammunition as unknown as RangedData; }
     public setRangeAmmoData(data: RangedData): void { this.ammunition = data as unknown as Ammunition; }
-    public getPoisonImmunityTimer(): SecondsTimer { return this.poisonImmunityTimer ??= new SecondsTimer(); }
+    public getPoisonImmunityTimer(): SecondsTimer {
+        return this.character.isPlayer() ? this.getPoisonClock() : (this.poisonImmunityTimer ??= new SecondsTimer());
+    }
+    public getPoisonClock(): PoisonClock {
+        return this.poisonClock ??= new PoisonClock(() => {
+            const { CombatPoisonEffect } = require("../../task/impl/CombatPoisonEffect") as typeof import("../../task/impl/CombatPoisonEffect");
+            CombatPoisonEffect.resume(this.character);
+        });
+    }
     public getFireImmunityTimer(): SecondsTimer { return this.fireImmunityTimer ??= new SecondsTimer(); }
     public getTeleblockTimer(): SecondsTimer { return this.teleblockTimer ??= new SecondsTimer(); }
     public getPrayerBlockTimer(): SecondsTimer { return this.prayerBlockTimer ??= new SecondsTimer(); }
-    public getLastAttack(): Stopwatch { return this.lastAttack; }
+    public getLastAttack(): TickStopwatch { return this.lastAttack; }
 
     private shouldRetreat(): boolean {
         if (!this.character.isNpc()) return false;
         const npc = this.character.getAsNpc();
-        if (Number(npc.getAttribute("arceuus:dark-lure-until") ?? 0) > Date.now()) return false;
+        if (Number(npc.getAttribute("arceuus:dark-lure-until") ?? 0) > World.getProcessCycle()) return false;
         if (!npc.getCurrentDefinition().doesRetreat()) return false;
         const coordinator = npc.getMovementCoordinator();
         if (coordinator.getCoordinateState() === CoordinateState.RETREATING ||
@@ -661,8 +672,9 @@ export class Combat {
         if (targeting) {
             const resolved = SpecialAttackTargetingResolver.resolve(this.character, target, targeting);
             if (resolved.largeTargetExtraHit) {
-                // TODO: reduced (0.75) accuracy for the large-target second hit.
-                const extra = method.hits(this.character, target);
+                // Wiki: the large-target second hit has 25% reduced accuracy.
+                const scale = targeting.largeTargetExtraHit?.accuracyMultiplier ?? 1;
+                const extra = AccuracyFormulasDpsCalc.withAccuracyScale(scale, () => method.hits(this.character, target));
                 if (extra) for (const hit of extra) CombatFactory.addPendingHit(hit);
             } else {
                 for (const secondary of resolved.secondaryTargets) {

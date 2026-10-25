@@ -17,7 +17,7 @@ import type { FriendsChatSnapshot } from "../../common/social/FriendsChat";
 import type { WorldEntityBuildArea } from "../../common/worldentity/WorldEntityTypes";
 
 /** Camera easing ids, in the order the server encodes them (ClientProtocol CAMERA_EASINGS). */
-const CAMERA_EASINGS = ["linear", "ease_in_out_sine", "ease_out_cubic", "ease_out_sine"] as const;
+const CAMERA_EASINGS = ["linear", "ease_in_out_sine", "ease_out_cubic", "ease_out_sine", "ease_in_sine"] as const;
 
 /**
  * Binary packet buffer for client decoding
@@ -942,6 +942,19 @@ export function decodeServerPacket(data: Uint8Array | ArrayBuffer): DecodedServe
             return { type: "widget", payload: { action: "set_colour", uid, colour } };
         }
 
+        case ServerPacketId.WIDGET_SET_ANGLE:
+            // IF_SETANGLE: the model's x and y angles and zoom, as the cs2 op sets them.
+            return {
+                type: "widget",
+                payload: {
+                    action: "set_angle",
+                    uid: reader.readInt(),
+                    angleX: reader.readShort(),
+                    angleY: reader.readShort(),
+                    zoom: reader.readShort(),
+                },
+            };
+
         case ServerPacketId.WIDGET_SET_POSITION:
             return {
                 type: "widget",
@@ -983,6 +996,19 @@ export function decodeServerPacket(data: Uint8Array | ArrayBuffer): DecodedServe
                     fromSlot: reader.readShort(),
                     toSlot: reader.readShort(),
                     flags: reader.readInt(),
+                },
+            };
+
+        case ServerPacketId.WIDGET_SET_FLAGS_RANGE_V2:
+            return {
+                type: "widget",
+                payload: {
+                    action: "set_flags_range",
+                    uid: reader.readInt(),
+                    fromSlot: reader.readShort(),
+                    toSlot: reader.readShort(),
+                    flags: reader.readInt(),
+                    opMask: reader.readInt(),
                 },
             };
 
@@ -1559,6 +1585,11 @@ export function decodeServerPacket(data: Uint8Array | ArrayBuffer): DecodedServe
                 const flags = reader.readByte();
                 if (!easing) return null;
                 return { type: "camera", payload: { mode: "arc", centreX, centreY, x, y, height, cycles, easing, ignoreTerrain: (flags & 2) !== 0 } };
+            }
+            if (mode === 12) {
+                if (reader.readByte() === 1) return { type: "camera", payload: { mode: "target", player: reader.readShort() } };
+                const x = reader.readShort(), y = reader.readShort();
+                return { type: "camera", payload: { mode: "target", x, y, level: reader.readByte() } };
             }
             if (mode === 6) {
                 return { type: "camera", payload: { mode: "unlock", unlock: reader.readBoolean() } };

@@ -43,7 +43,7 @@ import { PlayerDeathTask } from "../../../task/impl/PlayerDeath"
 import { PlayerSession } from "../../../../net/PlayerSession"
 import { PacketSender } from "../../../../net/packet/PacketSender"
 import { FrameUpdater } from "../../../../util/FrameUpdater"
-import { Stopwatch } from "../../../../util/Stopwatch";
+import { TickStopwatch } from "../../../../util/TickStopwatch";
 import { TimerKey } from "../../../../util/timers/TimerKey";
 import { emptySailingState, type SailingState } from "../../../content/sailing/SailingState";
 import { Trading } from "../../../content/Trading";
@@ -79,8 +79,18 @@ export class Player extends Mobile {
     getSize(): number {
         return 1;
     }
-    public increaseStats = new SecondsTimer();
-    public decreaseStats = new SecondsTimer();
+    /** Wiki (Temporary skill boost, Hitpoints): natural restoration runs on one-minute (100-tick) cycles. */
+    public static readonly STAT_RESTORE_TICKS = 100;
+    /** Wiki (Rapid Heal): Rapid Heal or a Hitpoints cape heal a point every 30 seconds. */
+    public static readonly FAST_HITPOINTS_REGEN_TICKS = 50;
+    /** Cycle the next drained-stat restore is due on (-1: not started). */
+    private statRestoreDue = -1;
+    /** Cycle Rapid Restore's own restore is due on; it starts when the prayer is switched on. */
+    private rapidRestoreDue = -1;
+    /** Cycle the Hitpoints countdown started on; switching Rapid Heal on or off restarts it. */
+    private hitpointsTimerStart = -1;
+    private rapidHealWasActive = false;
+    private hitpointsRegen: { player: Player; fast: boolean; amount: number } | null = null;
     private localPlayers: Player[] = [];
     private localNpcs: NPC[] = [];
     public packetSender = new PacketSender(this);
@@ -92,8 +102,8 @@ export class Player extends Mobile {
     public quickPrayers = new QuickPrayers(this);
     public inventory = new Inventory(this);
     public equipment = new Equipment(this);
-    private clickDelay = new Stopwatch();
-    private lastItemPickup = new Stopwatch();
+    private clickDelay = new TickStopwatch();
+    private lastItemPickup = new TickStopwatch();
     private aggressionTolerance = new AggressionTolerance(this);
     // Delay for restoring special attack
     private specialAttackRestore = new SecondsTimer();
@@ -130,7 +140,7 @@ export class Player extends Mobile {
     private playerBot = false;
     private botAreaProcessTick = 0;
     private runEnergy = 100;
-    private lastRunRecovery = new Stopwatch();
+    private lastRunRecovery = new TickStopwatch();
     private isDying: boolean;
     public forceMovement: ForceMovement;
     private skillAnimation: number;
@@ -163,6 +173,8 @@ export class Player extends Mobile {
     private static readonly VIEW_DISTANCE_REGROW_CYCLES = 10;
     public skullType: SkullType;
     private skullIconOverride: number | null = null;
+    /** The override shows even without a skull timer (risk skulls); otherwise only while skulled. */
+    private skullIconOverrideAlways = false;
     public combatSpecial: CombatSpecial;
     private vengeanceTimer = new SecondsTimer();
     private wildernessLevel: number;
@@ -206,6 +218,7 @@ export class Player extends Mobile {
         this.setHasVengeance(false);
         this.getCombat().getFireImmunityTimer().stop();
         this.getCombat().getPoisonImmunityTimer().stop();
+        this.getCombat().getPoisonClock().resetPhase();
         this.getCombat().getTeleblockTimer().stop();
         this.getTimers().cancel(TimerKey.FREEZE);
         this.getTimers().cancel(TimerKey.FREEZE_IMMUNITY);
@@ -385,6 +398,8 @@ export class Player extends Mobile {
         const timed = <T>(phase: string, fn: () => T): T =>
             ServerPerf.measurePhase(`player.process.${phase}`, fn);
 
+        // Client input first: packets received since the last turn act now, on the tick.
+        timed("client_input", () => this.getSession()?.processPackets());
         // Queued impacts land before this player acts, matching LostCity's
         // processQueues-then-processInteraction order. A hit that kills them here
         // stops the rest of this turn via the isDying/hitpoints guards below.
@@ -462,63 +477,75 @@ export class Player extends Mobile {
             timed("prayer_drain", () => PrayerHandler.processDrain(this));
         }
 
-        // PlayerBot-specific processing skipped in this runtime.
-        // Decrease boosted stats Increase lowered stats
+        // Restore lowered stats and regenerate Hitpoints. Boosts other than Hitpoints decay on
+        // the Potions plugin's continuous cycle.
         if (this.getHitpoints() > 0) {
-            if (this.increaseStats.finished() || this.decreaseStats.secondsElapsed() >= (PrayerHandler.isActivated(this, PrayerHandler.PRESERVE) ? 90 : 60)) {
-                timed("stats", () => {
-                    for (let skill of Skill.values()) {
-                        let current = this.getSkillManager().getCurrentLevel(skill);
-                        let max = this.getSkillManager().getMaxLevel(skill);
+            timed("stats", () => this.processStatRestoration(World.getProcessCycle()));
+        }
+    }
 
-                        // Should lowered stats be increased?
-                        if (current < max) {
-                            if (this.increaseStats.finished()) {
-                                let restoreRate = 1;
+    /**
+     * Natural restoration on cycle deadlines (bots take turns on a stride, so they catch up):
+     * - lowered stats other than Hitpoints and Prayer gain a point every minute, and Rapid Restore
+     *   adds a point every minute on its own timer from when it is switched on (Wiki: Rapid Restore);
+     * - Hitpoints heal a point every minute, every 30 seconds with Rapid Heal or a Hitpoints cape
+     *   ("stats:hitpoints-regen", which also lets a regen bracelet double the amount), and Hitpoints
+     *   above base drop a point a minute; switching Rapid Heal on or off restarts that countdown
+     *   (Wiki: Hitpoints, Rapid Heal). Player bots keep their boosts.
+     */
+    public processStatRestoration(cycle: number): void {
+        const skills = this.getSkillManager();
+        if (this.statRestoreDue < 0) this.statRestoreDue = cycle + Player.STAT_RESTORE_TICKS;
+        const restoreDue = cycle >= this.statRestoreDue;
+        if (restoreDue) this.statRestoreDue = cycle + Player.STAT_RESTORE_TICKS;
 
-                                // Rapid restore effect - 2x restore rate for all stats except hp/prayer
-                                // Rapid heal - 2x restore rate for hitpoints
-                                if (skill != Skill.HITPOINTS && skill != Skill.PRAYER) {
-                                    if (PrayerHandler.isActivated(this, PrayerHandler.RAPID_RESTORE)) {
-                                        restoreRate = 2;
-                                    }
-                                } else if (skill == Skill.HITPOINTS) {
-                                    if (PrayerHandler.isActivated(this, PrayerHandler.RAPID_HEAL)) {
-                                        restoreRate = 2;
-                                    }
-                                }
+        const rapidRestore = PrayerHandler.isActivated(this, PrayerHandler.RAPID_RESTORE);
+        if (!rapidRestore) this.rapidRestoreDue = -1;
+        else if (this.rapidRestoreDue < 0) this.rapidRestoreDue = cycle + Player.STAT_RESTORE_TICKS;
+        const rapidRestoreDue = rapidRestore && cycle >= this.rapidRestoreDue;
+        if (rapidRestoreDue) this.rapidRestoreDue = cycle + Player.STAT_RESTORE_TICKS;
 
-                                // "stats:restore-rate": gear may raise how fast a stat restores (the Hitpoints cape).
-                                const restore = { player: this, skill, rate: restoreRate };
-                                PluginManager.emitCustomEvent("stats:restore-rate", restore);
-                                restoreRate = restore.rate;
-
-                                this.getSkillManager().increaseCurrentLevel(skill, restoreRate, max);
-                            }
-                        } else if (current > max) {
-
-                            // Should boosted stats be decreased?
-                            if (this.decreaseStats.secondsElapsed() >= (PrayerHandler.isActivated(this, PrayerHandler.PRESERVE) ? 90 : 60)) {
-
-                                // Never decrease Hitpoints / Prayer, and keep player-bot boosts static.
-                                if (!isBot && skill != Skill.HITPOINTS && skill != Skill.PRAYER) {
-                                    this.getSkillManager().decreaseCurrentLevel(skill, 1, 1);
-                                }
-
-                            }
-                        }
-                    }
-                    // Reset timers
-                    if (this.increaseStats.finished()) {
-                        this.increaseStats.start(60);
-                    }
-                    if (this.decreaseStats
-                        .secondsElapsed() >= (PrayerHandler.isActivated(this, PrayerHandler.PRESERVE) ? 90 : 60)) {
-                        this.decreaseStats.start((PrayerHandler.isActivated(this, PrayerHandler.PRESERVE) ? 90 : 60));
-                    }
-                });
+        if (restoreDue || rapidRestoreDue) {
+            const points = (restoreDue ? 1 : 0) + (rapidRestoreDue ? 1 : 0);
+            for (const skill of Skill.values()) {
+                if (skill === Skill.HITPOINTS || skill === Skill.PRAYER) continue;
+                const max = skills.getMaxLevel(skill);
+                if (skills.getCurrentLevel(skill) < max) skills.increaseCurrentLevel(skill, points, max);
             }
         }
+
+        const rapidHeal = PrayerHandler.isActivated(this, PrayerHandler.RAPID_HEAL);
+        if (this.hitpointsTimerStart < 0 || rapidHeal !== this.rapidHealWasActive) this.restartHitpointsTimer(cycle);
+        this.rapidHealWasActive = rapidHeal;
+        const elapsed = cycle - this.hitpointsTimerStart;
+        if (elapsed < Player.FAST_HITPOINTS_REGEN_TICKS) return;
+        const current = skills.getCurrentLevel(Skill.HITPOINTS);
+        const max = skills.getMaxLevel(Skill.HITPOINTS);
+        if (current < max) {
+            // Gear answers once per countdown, again after an equipment change: { fast } halves it,
+            // { amount } is what one regen heals.
+            if (this.hitpointsRegen === null) {
+                this.hitpointsRegen = { player: this, fast: rapidHeal, amount: 1 };
+                PluginManager.emitCustomEvent("stats:hitpoints-regen", this.hitpointsRegen);
+            }
+            if (!this.hitpointsRegen.fast && elapsed < Player.STAT_RESTORE_TICKS) return;
+            skills.increaseCurrentLevel(Skill.HITPOINTS, this.hitpointsRegen.amount, max);
+        } else if (elapsed < Player.STAT_RESTORE_TICKS) {
+            return;
+        } else if (current > max && !this.isPlayerBot()) {
+            skills.decreaseCurrentLevel(Skill.HITPOINTS, 1, max);
+        }
+        this.restartHitpointsTimer(cycle);
+    }
+
+    /** Worn items changed: the next Hitpoints regen asks gear again, keeping the countdown. */
+    public onEquipmentChanged(): void {
+        this.hitpointsRegen = null;
+    }
+
+    private restartHitpointsTimer(cycle: number): void {
+        this.hitpointsTimerStart = cycle;
+        this.hitpointsRegen = null;
     }
 
     /** Ticks after the last hit taken before the logout button works: "10 seconds" (rsprox captures). */
@@ -598,6 +625,7 @@ export class Player extends Mobile {
             username: this.getUsername(),
         });
         this.getRelations().updateLists(false);
+        CombatPoisonEffect.suspend(this);
         TaskManager.cancelTasks(this);
         this.setHasVengeance(false);
         this.getVengeanceTimer().stop();
@@ -641,6 +669,7 @@ export class Player extends Mobile {
         } else if (autocastSpell == null || this.getEquipment().hasStaffEquipped()) {
             Autocasting.setAutocast(this, autocastSpell);
         }
+        CombatPoisonEffect.resume(this);
         for (const [varpId, value] of Object.entries(this.audioSettings)) {
             this.getPacketSender().sendConfig(Number(varpId), value);
         }
@@ -701,6 +730,13 @@ export class Player extends Mobile {
         return this.creationDate;
     }
 
+    /** Restore account identity without accepting corrupt or future save dates. */
+    public setCreationDate(timestamp: number): void {
+        if (Number.isSafeInteger(timestamp) && timestamp > 0 && timestamp <= Date.now()) {
+            this.creationDate = new Date(timestamp);
+        }
+    }
+
     public getAudioSettings(): Readonly<Record<number, number>> {
         return this.audioSettings;
     }
@@ -717,6 +753,21 @@ export class Player extends Mobile {
         if (!(varpId in DEFAULT_AUDIO_SETTINGS) || !Number.isFinite(value)) return false;
         const maximum = varpId === 18 ? 2 : 100;
         this.audioSettings[varpId] = Math.max(0, Math.min(maximum, Math.trunc(value)));
+        return true;
+    }
+
+    /**
+     * An audio varp the client transmitted. A change is announced as the "audio:setting-changed"
+     * custom event ({ player, varpId, previous, value }) so plugins can answer it, as the Music
+     * plugin does when the music volume rises from 0.
+     */
+    public applyAudioSettingFromClient(varpId: number, value: number): boolean {
+        const previous = this.audioSettings[varpId];
+        if (!this.setAudioSetting(varpId, value)) return false;
+        const next = this.audioSettings[varpId];
+        if (next !== previous) {
+            PluginManager.emitCustomEvent("audio:setting-changed", { player: this, varpId, previous, value: next });
+        }
         return true;
     }
 
@@ -812,7 +863,15 @@ export class Player extends Mobile {
     private viewDistanceQuietCycles = 0;
 
     public getViewDistance(): number {
-        return this.viewDistance;
+        return this.fixedViewDistance ?? this.viewDistance;
+    }
+
+    /** A view distance kept regardless of the crowd (a spectator watching a room), or null. */
+    private fixedViewDistance: number | null = null;
+
+    /** Fixes how far other players are seen (up to 64), as for a spectator; null resizes again. */
+    public setFixedViewDistance(distance: number | null): void {
+        this.fixedViewDistance = distance == null ? null : Math.max(1, Math.min(64, Math.trunc(distance)));
     }
 
     /** How far away NPCs (and their projectiles) are seen; 15 unless an area widens it. */
@@ -860,10 +919,14 @@ export class Player extends Mobile {
     }
 
     public setInterfaceId(interfaceId: number): this {
+        const previousId = this.interfaceId;
         if (this.interfaceId >= 0 && interfaceId >= 0 && this.interfaceId !== interfaceId) {
             PluginManager.emitCustomEvent("interface:closed", { player: this, interfaceId: this.interfaceId });
         }
         this.interfaceId = interfaceId;
+        if (previousId !== interfaceId) {
+            PluginManager.emitCustomEvent("interface:changed", { player: this, previousId, interfaceId });
+        }
         return this;
     }
 
@@ -1006,7 +1069,7 @@ export class Player extends Mobile {
         return activated;
     }
 
-    public getLastItemPickup(): Stopwatch {
+    public getLastItemPickup(): TickStopwatch {
         return this.lastItemPickup;
     }
 
@@ -1054,7 +1117,7 @@ export class Player extends Mobile {
         this.skullTimer = skullTimer;
     }
 
-    public getClickDelay(): Stopwatch {
+    public getClickDelay(): TickStopwatch {
         return this.clickDelay;
     }
 
@@ -1193,14 +1256,24 @@ export class Player extends Mobile {
         return this.skullIconOverride ?? this.skullType.getIconId();
     }
 
-    public setSkullIconOverride(iconId: number | null): void {
+    public setSkullIconOverride(iconId: number | null, always = false): void {
         const normalizedIconId = Number.isInteger(iconId) && iconId >= 0 ? iconId : null;
-        if (this.skullIconOverride === normalizedIconId) {
+        const normalizedAlways = normalizedIconId !== null && always;
+        if (this.skullIconOverride === normalizedIconId && this.skullIconOverrideAlways === normalizedAlways) {
             return;
         }
 
         this.skullIconOverride = normalizedIconId;
+        this.skullIconOverrideAlways = normalizedAlways;
         this.getUpdateFlag().flag(Flag.APPEARANCE);
+    }
+
+    /** The skull drawn over the player's head, or -1 for none. */
+    public getHeadSkullIcon(): number {
+        if (this.skullIconOverrideAlways) {
+            return this.skullIconOverride;
+        }
+        return this.isSkulled() ? this.getSkullIconId() : -1;
     }
 
     public setSkullType(skullType: SkullType) {
@@ -1248,7 +1321,7 @@ export class Player extends Mobile {
     }
 
     public manipulateHit(hit: PendingHit): PendingHit {
-        return hit;
+        return PluginManager.emitPlayerHitModify(this, hit);
     }
 
     public getEnteredAmountAction(): EnteredAmountAction {

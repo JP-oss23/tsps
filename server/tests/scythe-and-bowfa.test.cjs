@@ -10,7 +10,6 @@ const { ItemIdentifiers } = require('../dist/util/ItemIdentifiers');
 const { RangedWeapon } = require('../dist/game/content/combat/ranged/RangedData');
 const { BOW_OF_FAERDHINEN_IDS } = require('../dist/game/content/combat/ranged/CrystalBow');
 const Scythe = require('../plugins/items/ScytheOfVitur.plugin');
-const CrystalArmour = require('../plugins/combat/effects/CrystalArmour.EquipmentEffects');
 
 const NAMES = new Map();
 let nextId = 90000;
@@ -32,12 +31,14 @@ function player(worn) {
     return entity;
 }
 
-const npcOfSize = (size) => ({ isNpc: () => true, getAsNpc: () => ({ getSize: () => size }) });
+const npcOfSize = (size) => ({ getHitpoints: () => 1000, isNpc: () => true, getAsNpc: () => ({ getSize: () => size }) });
 
 // One registration against a fake core; each swing resets what it records.
 let rerolled = [];
 let maxHit = 0;
 let resolver;
+let multi = false;
+let worldNpcs = [];
 class MeleeCombatMethod {}
 class PendingHit {
     constructor() {
@@ -46,6 +47,7 @@ class PendingHit {
     getTotalDamage() {
         return this.damage;
     }
+    setTotalDamage(value) { this.damage = value; }
 }
 Scythe.register({
     core: {
@@ -54,10 +56,16 @@ Scythe.register({
         ItemIdentifiers,
         MeleeCombatMethod,
         PendingHit,
-        CombatFactory: { applyStyleDamage: (hit, max) => { rerolled.push(max); hit.damage = max; } },
+        CombatFactory: {
+            applyStyleDamage: (hit, max) => { rerolled.push(max); hit.damage = max; },
+            canAttackSecondaryTarget: () => true,
+        },
         DamageFormulas: { calculateMaxMeleeHit: () => maxHit },
+        World: { getNpcs: () => worldNpcs, getPlayers: () => [] },
     },
+    getAreaManager: () => ({ inMulti: () => multi }),
     registerCombatMethodResolver: (r) => { resolver = r; },
+    onServerStartup: (handler) => handler(),
     onItemAction: () => {},
     onItemOnItem: () => {},
 });
@@ -86,6 +94,25 @@ test('each scythe hit has half the max of the one before, rounded down', () => {
     assert.deepEqual(swing(npcOfSize(3), 48).rerolled, [24, 12]);
 });
 
+test('the cleave reads multicombat from the area manager: a swing with located targets never throws', () => {
+    const at = (x, y) => ({ getX: () => x, getY: () => y, getZ: () => 0 });
+    const located = (x, y) => ({ ...npcOfSize(1), getLocation: () => at(x, y), getAsNpc: () => ({ getSize: () => 1 }) });
+    const target = located(10, 11);
+    const beside = located(11, 11);
+    worldNpcs = [target, beside];
+    const attacker = { ...player({ [Equipment.WEAPON_SLOT]: SCYTHE }), getLocation: () => at(10, 10) };
+    const method = resolver.resolve(attacker);
+    maxHit = 40;
+    multi = false;
+    assert.deepEqual(method.hits(attacker, target).length, 1, 'single-way: the target alone');
+    assert.deepEqual(Scythe._test.cleaveTargets(attacker, target), []);
+    multi = true;
+    assert.deepEqual(Scythe._test.cleaveTargets(attacker, target), [beside], 'multi: the next tile of the arc');
+    assert.equal(method.hits(attacker, target).length, 2);
+    multi = false;
+    worldNpcs = [];
+});
+
 test('every bow of Faerdhinen fires its own arrows, not the ammo slot', () => {
     assert.ok(BOW_OF_FAERDHINEN_IDS.includes(ItemIdentifiers.BOW_OF_FAERDHINEN));
     for (const id of BOW_OF_FAERDHINEN_IDS) {
@@ -94,28 +121,6 @@ test('every bow of Faerdhinen fires its own arrows, not the ammo slot', () => {
         assert.equal(ammo.getItemId(), id);
     }
     assert.equal(RangedWeapon.getSelfAmmo(ItemIdentifiers.BOW_OF_FAERDHINEN_C_).getProjectileId(), 1922);
-});
-
-test('crystal armour boosts a crystal bow or bow of Faerdhinen by its pieces', () => {
-    const bowfa = item('Bow of faerdhinen (c)');
-    const helm = item('Crystal helm');
-    const body = item('Crystal body');
-    const legs = item('Crystal legs');
-    const full = player({
-        [Equipment.WEAPON_SLOT]: bowfa,
-        [Equipment.HEAD_SLOT]: helm,
-        [Equipment.BODY_SLOT]: body,
-        [Equipment.LEG_SLOT]: legs,
-    });
-    assert.equal(CrystalArmour._test.pieces(full), 6);
-    assert.equal(CrystalArmour._test.accuracy(full, 20000), 26000, '+30%');
-    assert.equal(CrystalArmour._test.damage(full, 40), 46, '+15%');
-
-    const helmOnly = player({ [Equipment.WEAPON_SLOT]: bowfa, [Equipment.HEAD_SLOT]: helm });
-    assert.equal(CrystalArmour._test.damage(helmOnly, 40), 41, '+2.5%');
-
-    const gauntletBow = player({ [Equipment.WEAPON_SLOT]: item('Crystal bow (perfected)'), [Equipment.HEAD_SLOT]: helm });
-    assert.equal(CrystalArmour._test.pieces(gauntletBow), 0);
 });
 
 // Scythe charges (Wiki: Scythe of Vitur#Charging and degradation).

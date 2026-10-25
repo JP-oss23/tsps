@@ -30,16 +30,28 @@ function toOsrsKeyCode(domKeyCode: number): number {
     return -1;
 }
 
+/** Finger travel equivalent to one mouse-wheel notch (CSS px). */
+const PINCH_PX_PER_WHEEL_NOTCH = 20;
+/** A mouse wheel notch's deltaY (pixel mode). */
+const WHEEL_NOTCH_DELTA = 100;
+
+/**
+ * Forced-landscape portrait mode (useSafariLandscapeLock) rotates the root 90deg clockwise.
+ * getBoundingClientRect then returns swapped (rotated) dimensions.
+ */
+export function isIosLandscapeRotated(): boolean {
+    const root = typeof document !== "undefined" ? document.documentElement : undefined;
+    return (
+        root?.dataset?.iosSafariForceLandscape === "1" &&
+        root?.dataset?.iosSafariForceLandscapeRotated === "1"
+    );
+}
+
 export function getMousePos(container: HTMLElement, event: MouseEvent | Touch): vec2 {
     const rect = container.getBoundingClientRect();
 
-    // Forced-landscape portrait mode rotates the root 90deg clockwise.
-    // In that case getBoundingClientRect returns swapped (rotated) dimensions,
-    // so use clientWidth/clientHeight for the unrotated layout dimensions.
-    const root = typeof document !== "undefined" ? document.documentElement : undefined;
-    const forceLandscape = root?.dataset?.iosSafariForceLandscape === "1";
-    const rotatedLandscape = root?.dataset?.iosSafariForceLandscapeRotated === "1";
-    const isIosRotated = forceLandscape && rotatedLandscape;
+    // When rotated, use clientWidth/clientHeight for the unrotated layout dimensions.
+    const isIosRotated = isIosLandscapeRotated();
 
     // Use getBoundingClientRect dimensions for baseW/baseH so that viewport-space
     // coordinates (event.clientX - rect.left) are correctly scaled to canvas buffer
@@ -213,6 +225,8 @@ export class InputManager {
 
     /** Accumulated wheel delta for current frame */
     wheelDeltaY: number = 0;
+    /** Continuous wheel/pinch delta accepted by viewport zoom, after foreground UI ownership. */
+    viewportWheelDeltaY: number = 0;
     wheelCamDeltaX: number = 0;
     wheelCamDeltaY: number = 0;
 
@@ -226,8 +240,12 @@ export class InputManager {
     /** Center point of pinch gesture */
     private pinchCenterX: number = 0;
     private pinchCenterY: number = 0;
-    /** Accumulated pinch zoom delta (positive = zoom in, negative = zoom out) */
+    /** Continuous pinch wheel units this frame; positive zooms out. */
     pinchZoomDelta: number = 0;
+    private pinchWheelDeltaY: number = 0;
+    private pinchZoomRemainder: number = 0;
+    /** Finger travel (CSS px, + = pinch in) not yet turned into wheel notches. */
+    private pinchNotchRemainder: number = 0;
 
     // === Touch scroll state (for mobile lists) ===
     /** Previous touch Y position for scroll velocity calculation */
@@ -886,6 +904,13 @@ export class InputManager {
         // mouse wheel input resets idle timer (prevents AFK logout while scrolling).
         this.idleTime = 0;
         this.lastInputTimeMs = this.nowMs();
+        // Keyboard interface selection can park mouseX/Y on a focused control between
+        // wheel events. A stationary physical cursor must still scroll the list beneath it.
+        if (this.element && !this.isPointerLock() && Number.isFinite(event.clientX) && Number.isFinite(event.clientY)) {
+            const [x, y] = getMousePos(this.element, event);
+            this.mouseX = x;
+            this.mouseY = y;
+        }
         if (this.mouseWheelDown) {
             this.wheelCamDeltaX += event.deltaX;
             this.wheelCamDeltaY += event.deltaY;
@@ -934,6 +959,8 @@ export class InputManager {
             const distance = this.getTouchDistance(event.touches[0], event.touches[1]);
             this.pinchStartDistance = distance;
             this.lastPinchDistance = distance;
+            this.pinchNotchRemainder = 0;
+            this.pinchZoomRemainder = 0;
             const [cx, cy] = this.getTouchCenter(event.touches[0], event.touches[1]);
             this.pinchCenterX = cx;
             this.pinchCenterY = cy;
@@ -964,14 +991,19 @@ export class InputManager {
         this.lastInputTimeMs = this.nowMs();
         this.lastTouchInputTimeMs = this.lastInputTimeMs;
 
-        // Handle pinch gesture — same sink as mouse wheel so minimap / UI onScroll
-        // and camera zoom all see identical wheelDeltaY.
+        // Keep coarse widget scrolling and continuous camera zoom from the same gesture.
         if (this.isPinching && event.touches.length === 2) {
             const distance = this.getTouchDistance(event.touches[0], event.touches[1]);
             const delta = distance - this.lastPinchDistance;
-            // Pinch-in (delta < 0) → positive wheelDeltaY (zoom out), matching wheel-down.
-            // Scale ~2 so a modest pinch feels similar to a few wheel notches.
-            this.wheelDeltaY += -delta * 2;
+            this.pinchZoomDelta += -delta * WHEEL_NOTCH_DELTA / PINCH_PX_PER_WHEEL_NOTCH;
+            // Widgets keep discrete notches; the camera also receives the continuous travel.
+            this.pinchNotchRemainder += -delta;
+            while (Math.abs(this.pinchNotchRemainder) >= PINCH_PX_PER_WHEEL_NOTCH) {
+                const sign = Math.sign(this.pinchNotchRemainder);
+                this.wheelDeltaY += sign * WHEEL_NOTCH_DELTA;
+                this.pinchWheelDeltaY += sign * WHEEL_NOTCH_DELTA;
+                this.pinchNotchRemainder -= sign * PINCH_PX_PER_WHEEL_NOTCH;
+            }
             this.lastPinchDistance = distance;
             const [cx, cy] = this.getTouchCenter(event.touches[0], event.touches[1]);
             this.pinchCenterX = cx;
@@ -999,14 +1031,15 @@ export class InputManager {
             this.isPinching = false;
             this.pinchStartDistance = 0;
             this.lastPinchDistance = 0;
-            // If one finger remains, start a fresh one-finger gesture.
+            // If one finger remains, start a fresh one-finger gesture: it may orbit the camera,
+            // but lifting it is the end of the pinch, not a tap where it rests.
             if (event.touches.length === 1 && this.element) {
                 const [x, y] = getMousePos(this.element, event.touches[0]);
                 this.prevTouchY = y;
                 this.prevTouchTime = performance.now();
                 this.touchScrollVelocityY = 0;
                 this.isTouchScrolling = false;
-                this.touchAdapter.onFingerDown(x, y, this.lastInputTimeMs);
+                this.touchAdapter.onFingerDown(x, y, this.lastInputTimeMs, true);
             }
             event.preventDefault();
             return;
@@ -1038,6 +1071,10 @@ export class InputManager {
         event.preventDefault();
         this.idleTime = 0;
         this.lastInputTimeMs = this.nowMs();
+
+        // A held Shift/Ctrl/Alt auto-repeats keydown. It is already held; queueing each repeat as a
+        // key press re-ran every onKey script and redrew all widgets many times a second (#845).
+        if (event.repeat && (event.keyCode === 16 || event.keyCode === 17 || event.keyCode === 18)) return;
 
         if (!prioritizeChat) {
             for (const handler of this.keyHandlers) if (handler.onKeyDown?.(event)) return;
@@ -1171,11 +1208,29 @@ export class InputManager {
      * ```
      */
     onFrameStart() {
+        this.viewportWheelDeltaY = 0;
         // Transfer click state for this frame
         this.clickMode3 = this.clickMode1;
         this.saveClickX = this.clickX;
         this.saveClickY = this.clickY;
         this.clickMode1 = ClickMode.NONE;
+    }
+
+    getCameraZoomDelta(): number {
+        return this.wheelDeltaY - this.pinchWheelDeltaY + this.pinchZoomDelta;
+    }
+
+    consumePinchZoomIncrement(increment: number): number {
+        const delta = this.getCameraZoomDelta() * increment / WHEEL_NOTCH_DELTA + this.pinchZoomRemainder;
+        const whole = Math.trunc(delta);
+        this.pinchZoomRemainder = delta - whole;
+        return whole * Math.sign(this.getCameraZoomDelta());
+    }
+
+    clearWheel(): void {
+        this.wheelDeltaY = 0;
+        this.pinchZoomDelta = 0;
+        this.pinchWheelDeltaY = 0;
     }
 
     /**
@@ -1200,14 +1255,14 @@ export class InputManager {
         // Clear per-frame deltas
         this.deltaMouseX = 0;
         this.deltaMouseY = 0;
-        this.wheelDeltaY = 0;
+        this.clearWheel();
+        this.viewportWheelDeltaY = 0;
         this.wheelCamDeltaX = 0;
         this.wheelCamDeltaY = 0;
         this._cameraDragDeltaX = 0;
         this._cameraDragDeltaY = 0;
         this.middleClickX = -1;
         this.middleClickY = -1;
-        this.pinchZoomDelta = 0;
         this.lastMouseX = this.mouseX;
         this.lastMouseY = this.mouseY;
 

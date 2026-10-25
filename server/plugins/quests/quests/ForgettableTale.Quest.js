@@ -60,6 +60,9 @@ module.exports = function registerForgettableTaleQuest(api) {
   const COMMANDER_VELDABAN = NpcIdentifiers.COMMANDER_VELDABAN; // 2228
   const COMMANDER_VELDABAN_2 = NpcIdentifiers.COMMANDER_VELDABAN_2; // 6045, the Keldagrim spawn
   const VELDABAN_IDS = new Set([COMMANDER_VELDABAN, COMMANDER_VELDABAN_2]);
+  const GIANT_DWARF_STAGE_ATTRIBUTE = "quest.giant_dwarf.stage";
+  const GIANT_STARTED_STAGE = 5;
+  const GIANT_COMPLETE_STAGE = 50;
 
   const DRUNKEN_DWARF = NpcIdentifiers.DRUNKEN_DWARF; // 322, random-event twin
   const DRUNKEN_DWARF_2 = NpcIdentifiers.DRUNKEN_DWARF_2; // 2408
@@ -669,6 +672,12 @@ module.exports = function registerForgettableTaleQuest(api) {
     return "starting-out-talking-to-commander-veldaban-again";
   }
 
+  /** Inactive Forgettable Tale yields to the prerequisite quest's Veldaban dialogue. */
+  function giantOwnsVeldaban(player) {
+    const stage = Number(player.getAttribute(GIANT_DWARF_STAGE_ATTRIBUTE)) || 0;
+    return stage >= GIANT_STARTED_STAGE && stage < GIANT_COMPLETE_STAGE;
+  }
+
   function drunkDwarfVariant(player) {
     const stage = stageOf(player);
     if (stage >= STAGE_STOUT_COLLECTED && stage < STAGE_STORY_HEARD) {
@@ -763,7 +772,10 @@ module.exports = function registerForgettableTaleQuest(api) {
 
   function selectVariant(event) {
     const { npcId, player } = event;
-    if (VELDABAN_IDS.has(npcId)) return veldabanVariant(player);
+    if (VELDABAN_IDS.has(npcId)) {
+      if (!questActive(player) && giantOwnsVeldaban(player)) return null;
+      return veldabanVariant(player);
+    }
     if (npcId === RIND) return rindVariant(player);
     if (npcId === ELSTAN) return held(player, LETTER) ? "brewing-talking-to-elstan" : null;
     if (ROWDY_IDS.has(npcId)) return rowdyVariant(player);
@@ -1006,10 +1018,10 @@ module.exports = function registerForgettableTaleQuest(api) {
 
   function talkCartConductor(event) {
     const { player, npcId } = event;
-    if (!CONDUCTOR_IDS.has(npcId)) return;
+    if (!CONDUCTOR_IDS.has(npcId)) return false;
     const stage = stageOf(player);
     if (stage < STAGE_VELDABAN_BRIEFED || stage >= STAGE_TUNNEL_ENTERED || quest.isComplete(player)) {
-      return; // the normal cart-conductor dialogue
+      return false; // the normal cart-conductor dialogue
     }
     event.handled = true;
     const choice = conductorVariant(player);
@@ -1018,10 +1030,10 @@ module.exports = function registerForgettableTaleQuest(api) {
 
   function talkDirector(event) {
     const { player, npcId } = event;
-    if (!DIRECTOR_IDS.has(npcId)) return;
+    if (!DIRECTOR_IDS.has(npcId)) return false;
     const stage = stageOf(player);
     if (stage < STAGE_STORY_HEARD || stage >= STAGE_TUNNEL_OPENED || quest.isComplete(player)) {
-      return; // the normal director dialogue
+      return false; // the normal director dialogue
     }
     event.handled = true;
     play(player, npcId, "exploring-the-closed-tunnel-before-entering-the-tunnel-talking-to-the-company-director");

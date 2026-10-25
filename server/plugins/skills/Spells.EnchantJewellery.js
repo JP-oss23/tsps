@@ -1,4 +1,5 @@
 let core;
+let pluginApi;
 const spells = new Map();
 
 function handleSpellOnItem(event) {
@@ -6,22 +7,35 @@ function handleSpellOnItem(event) {
   if (!spell) return;
   event.handled = true;
   const { player, itemId, slot } = event;
-  const resultId = spell.results.get(itemId);
-  if (resultId === undefined) {
-    player.sendMessage("This spell cannot be cast on that item.");
+  const inventory = player.getInventory();
+  const recipe = { player, spellName: spell.data.name, itemId, resultId: spell.results.get(itemId) };
+  pluginApi.emitCustomEvent("magic:enchant-item-recipe", recipe);
+  if (recipe.declined) {
+    if (recipe.message) player.sendMessage(recipe.message);
     return;
   }
-  const inventory = player.getInventory();
+  if (recipe.resultId === undefined) {
+    // "magic:enchant-item": something else this spell works on (the Mage Training Arena's
+    // shapes), cast with this spell's own runes, level and XP.
+    const other = { player, spell, spellName: spell.data.name, itemId, slot, handled: false };
+    pluginApi.emitCustomEvent("magic:enchant-item", other);
+    if (!other.handled) player.sendMessage("This spell cannot be cast on that item.");
+    return;
+  }
   if (inventory.getItems()[slot]?.getId() !== itemId || !spell.canCast(player, true)) return;
   player.performAnimation(new core.Animation(spell.data.animation));
   player.performGraphic(new core.Graphic(spell.data.graphic, 0, core.GraphicHeight.HIGH));
   player.getPacketSender().sendSound(spell.data.sound);
   inventory.deleteNumber(itemId, 1);
-  inventory.addItem(new core.Item(resultId, 1));
+  inventory.addItem(new core.Item(recipe.resultId, 1));
   player.getSkillManager().addExperiences(core.Skill.MAGIC, spell.baseExperience());
+  pluginApi.emitCustomEvent("magic:enchanted", { player, spellName: spell.data.name, itemId, productId: recipe.resultId });
+  pluginApi.emitCustomEvent("magic:enchant-item-cast", recipe);
+  if (recipe.message) player.sendMessage(recipe.message);
 }
 
 module.exports = function attach(api) {
+  pluginApi = api;
   core = api.core;
   const { ItemIds } = core;
   // Wiki Lvl-1–7 Enchant GIFs/sound files; sequences and graphics verified in cache 241.

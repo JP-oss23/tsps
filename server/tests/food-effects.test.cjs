@@ -28,7 +28,7 @@ const NOT_FOOD = {
   "Not plain food: a quest, event or minigame item with its own effect (Wiki)": [
     "Abyssal potato", "Araxyte venom sac", "Bologano fruit", "Bruised banana", "Cave nightshade",
     "Chocolate strawberry", "Corrupted shark", "Dwarven rock cake", "Fishlike thing", "Golovanova fruit",
-    "Infernal eel", "Jar of congealed blood", "Leechfin", "Logavano fruit", "Melted easter egg", "Mint cake",
+    "Infernal eel", "Jar of congealed blood", "Leechfin", "Leftovers", "Logavano fruit", "Melted easter egg", "Mint cake",
     "Mystery fruit", "Nightshade", "Poison karambwan", "Rock cake",
     "Rotten apple", "Rotten potato", "Sacred eel", "Seaweed sandwich", "Shrunk ogleroot",
     "Slice of birthday cake", "Special super hot kebab", "Spicy stew", "Sweetcorn", "Tchiki nut paste",
@@ -96,7 +96,7 @@ function createPlayer({ hp = 50, maxHp = 99, at = new Location(3222, 3222, 0) } 
     getTimers: () => timers,
     getCombat: () => ({
       delayAttack: (ticks) => attackDelays.push(ticks),
-      getPoisonImmunityTimer: () => ({ secondsRemaining: () => 0, start() {} }),
+      getPoisonImmunityTimer: () => ({ protectBriefly(seconds, venom) { assert.equal(seconds, 18); assert.equal(venom, true); } }),
       getTarget: () => null,
       getAttacker: () => null,
     }),

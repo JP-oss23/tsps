@@ -15,6 +15,8 @@ const CrystalAxe = require("./woodcutting/CrystalAxe.Woodcutting");
 const EntTrunk = require("./woodcutting/EntTrunk.Woodcutting");
 const ThickVines = require("./woodcutting/ThickVines.Woodcutting");
 const Shrine = require("./woodcutting/Shrine.Woodcutting");
+const FarmedRedwood = require("./farming/Redwood.Farming");
+const { pauseForLevelUp } = require("./SkillActions");
 
 const DEFAULT_TREE_STUMP_ID = ObjectIds.TREE_STUMP_2;
 // Older trees share models but not stumps, and some sit next to an unrelated stump id; key their
@@ -581,6 +583,12 @@ const FARMED_HARDWOODS = ["camphor", "ironwood", "rosewood"].map((name) => ({
   ...TREES.find((tree) => tree.name === name),
   respawnTicks: 150,
 }));
+const FARMED_TREES = [...FARMED_HARDWOODS, {
+  ...TREES.find((tree) => tree.name === "redwood"),
+  despawnTicks: 0,
+  depleteChance: FarmedRedwood.DEPLETION_ROLL,
+  respawnTicks: FarmedRedwood.REGROW_TICKS,
+}];
 
 
 
@@ -992,6 +1000,7 @@ function processWoodcuttingTick(activeSessions, currentTick) {
       stopWoodcutting(activeSessions, player);
       continue;
     }
+    if (state.levelUpPaused) continue;
 
     const activeTree = MapObjects.get(
       state.objectId,
@@ -1130,13 +1139,18 @@ function handleChop(event) {
 
 function requestedChop(event) {
   // Patch hardwoods share log ids with the wild trees but regrow on farming's own timer.
-  let tree = [...FARMED_HARDWOODS, ...TREES].find(tree => tree.logId === event.logId);
+  let tree = [...FARMED_TREES, ...TREES].find(tree => tree.logId === event.logId);
   if (tree && event.removeOnly) tree = { ...tree, logId: -1, xpReward: 0, multi: false };
   if (tree) event.handled = startWoodcutting(event.player, event.object, tree, activeSessionsRef);
 }
 
 function requestedAxe(event) {
-  event.axe = findBestUsableAxe(event.player);
+  const candidate = event.itemId == null ? null : AXES.find((axe) => axe.id === event.itemId);
+  event.axe = event.itemId == null ? findBestUsableAxe(event.player) : candidate && canUseAxe(event.player, candidate) ? candidate : null;
+}
+
+function pauseWoodcutting(event) {
+  pauseForLevelUp(event, activeSessionsRef, (player) => stopWoodcutting(activeSessionsRef, player, false));
 }
 
 module.exports = {
@@ -1163,9 +1177,7 @@ module.exports = {
     api.onPlayerDisconnect(({ player }) => {
       stopWoodcutting(activeSessions, player, false);
     });
-    api.onCustomEvent("level-up:popup-opened", ({ player }) => {
-      stopWoodcutting(activeSessions, player, false);
-    });
+    api.onCustomEvent("level-up:popup-opened", pauseWoodcutting);
 
     api.onItemFirstAction((event) => {
       if (searchBirdNest(event.player, event.itemId)) {
@@ -1196,4 +1208,7 @@ module.exports = {
   findBestUsableAxe,
   findBestUsableAxeByLevel,
   isWoodcuttingActive,
+  calculateCutChance,
+  /** Stops the player's chopping (a Forestry event spawning beside them). */
+  stopWoodcutting: (player) => activeSessionsRef && stopWoodcutting(activeSessionsRef, player),
 };

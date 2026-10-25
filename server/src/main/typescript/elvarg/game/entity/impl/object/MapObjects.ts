@@ -76,6 +76,16 @@ export class MapObjects {
         return object;
     }
 
+    /**
+     * Whether the loc a player clicked, or one just like it, still stands where they clicked:
+     * nobody removed or changed it while they walked there (a door another player opened).
+     */
+    public static stillStands(player: Player, id: number, location: Location, object: GameObject): boolean {
+        const current = this.getPrivateArea(player, id, location);
+        return current === object || (current != null && current.getId() === object.getId()
+            && current.getType() === object.getType() && current.getFace() === object.getFace());
+    }
+
     public static get(id: number, location: Location, privateArea: PrivateArea): GameObject {
         // Check instanced objects..
         if (privateArea != null) {

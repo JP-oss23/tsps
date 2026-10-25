@@ -11,10 +11,12 @@ module.exports = function registerDeathOnTheIsleQuest(api) {
     CombatType,
     Item,
     Animation,
+    GameObject,
     ItemIdentifiers,
     Location,
     NpcIdentifiers,
     ObjectIdentifiers,
+    ObjectManager,
     Skill,
   } = api.core;
   const { refreshQuestList, registerQuest, startTranscript } = require("../QuestRuntime");
@@ -72,8 +74,8 @@ module.exports = function registerDeathOnTheIsleQuest(api) {
   ]);
   const HEAD_BUTLER_IDS = new Set([HEAD_BUTLER]);
 
-  // Cache items: the wardrobe gives the villa uniform pieces (29914/29915), the
-  // head butler's spares are 29916/29918 (gameval doti_butleruniform*).
+  // Cache items: the wardrobe gives the stolen uniform (29916/29918, capture
+  // 1695); entering the villa wears its own pieces (29914/29915).
   const UNIFORM_TOP_VILLA = ItemIdentifiers.BUTLERS_UNIFORM; // 29914
   const UNIFORM_BOTTOM_VILLA = ItemIdentifiers.BUTLERS_UNIFORM_2; // 29915
   const UNIFORM_TOP = ItemIdentifiers.BUTLERS_UNIFORM_3; // 29916
@@ -81,7 +83,8 @@ module.exports = function registerDeathOnTheIsleQuest(api) {
   const UNIFORM_TOPS = new Set([UNIFORM_TOP_VILLA, UNIFORM_TOP]);
   const UNIFORM_BOTTOMS = new Set([UNIFORM_BOTTOM_VILLA, UNIFORM_BOTTOM]);
   const UNIFORM_ITEMS = new Set([...UNIFORM_TOPS, ...UNIFORM_BOTTOMS]);
-  const TRAY = ItemIdentifiers.BUTLERS_TRAY; // 29912
+  const TRAY = ItemIdentifiers.BUTLERS_TRAY; // 29912, post-quest reward
+  const VILLA_TRAY = ItemIdentifiers.BUTLERS_TRAY_3; // 30156, worn inside the party
   const MASKS = [
     ItemIdentifiers.RAM_MASK, // 29929
     ItemIdentifiers.WOLF_MASK_4, // 29930
@@ -119,6 +122,10 @@ module.exports = function registerDeathOnTheIsleQuest(api) {
   const BOOKSHELF_CLOSED = ObjectIdentifiers.BOOKSHELF_397; // 54726, Search
   const BOOKSHELF_OPEN = ObjectIdentifiers.BOOKSHELF_398; // 54727, Search
   const BOOKSHELF_PASSAGE = ObjectIdentifiers.BOOKSHELF_PASSAGE; // 54728, Enter
+  // The generated identifiers omit the cache's changing-bookshelf multi-locs.
+  const CHANGING_BOOKSHELF_BASE = 54735; // stage varbit 11210: bookshelf, then the post-quest passage
+  const CHANGING_BOOKSHELF_IN = 54734; // clue varbit 11250: searchable closed/open bookshelf
+  const CHANGING_BOOKSHELF_TILE = new Location(1461, 9331, 0);
   const CRATE_POISON = ObjectIdentifiers.CRATE_341; // 54731, Search
   const BACKSTAGE_ENTRANCE = ObjectIdentifiers.BACKSTAGE_ENTRANCE; // 54715, Enter
   const FANCY_CHEST = ObjectIdentifiers.FANCY_CHEST; // 54736, Open
@@ -451,6 +458,11 @@ module.exports = function registerDeathOnTheIsleQuest(api) {
     );
   }
 
+  /** The hand-in transcript consumes these from the inventory, not the bank. */
+  function holdsEvidence(player) {
+    return EVIDENCE_ITEMS.every(id => hasItem(player, id));
+  }
+
   function playVariant(player, npcId, variant, select) {
     return startTranscript(api, player, npcId, PAGE, variant, select);
   }
@@ -511,6 +523,7 @@ module.exports = function registerDeathOnTheIsleQuest(api) {
   // ==========================================================================
 
   const trackedNpcs = new WeakMap();
+  const changingBookshelfByPlayer = new WeakMap();
 
   function spawnTracked(player, key, definition) {
     const tracked = trackedNpcs.get(player) ?? new Map();
@@ -568,6 +581,37 @@ module.exports = function registerDeathOnTheIsleQuest(api) {
       if (npc) { api.removeNpc(npc); tracked.delete(key); }
       spawnTracked(player, key, spawn);
     }
+    syncChangingBookshelf(player);
+  }
+
+  /** The map's changing bookshelf has no options during the quest; this player's copy is searchable. */
+  function syncChangingBookshelf(player) {
+    const stage = stageOf(player);
+    const existing = changingBookshelfByPlayer.get(player);
+    if (stage >= STAGE_THEATRE_GUARDS && stage < STAGE_NAIATLI_ACCUSED) {
+      if (existing?.getId() === CHANGING_BOOKSHELF_IN) return;
+      if (existing) ObjectManager.deregister(existing, true);
+      const object = new GameObject(CHANGING_BOOKSHELF_IN, cloneBookshelfTile(), 10, 0, null).setOwner(player);
+      ObjectManager.register(object, true);
+      changingBookshelfByPlayer.set(player, object);
+      return;
+    }
+    if (!existing || existing.getId() === CHANGING_BOOKSHELF_BASE) return;
+    ObjectManager.deregister(existing, true);
+    const base = new GameObject(CHANGING_BOOKSHELF_BASE, cloneBookshelfTile(), 10, 0, null).setOwner(player);
+    ObjectManager.register(base, true);
+    changingBookshelfByPlayer.set(player, base);
+  }
+
+  function cloneBookshelfTile() {
+    return new Location(CHANGING_BOOKSHELF_TILE.getX(), CHANGING_BOOKSHELF_TILE.getY(), CHANGING_BOOKSHELF_TILE.getZ());
+  }
+
+  function clearChangingBookshelf(player) {
+    const object = changingBookshelfByPlayer.get(player);
+    if (!object) return;
+    ObjectManager.deregister(object, true);
+    changingBookshelfByPlayer.delete(player);
   }
 
   function removeAllSpawns(player) {
@@ -707,12 +751,27 @@ module.exports = function registerDeathOnTheIsleQuest(api) {
     return null;
   }
 
+  // Interrupted conversations resume from the tail of the transcript they died in.
+  const ACCUSATION_AFTERMATH = "the-accusation-fighting-adala";
+  const STAGE_WRAP_UP = "the-stage-attacking-naiatli-again";
+
+  /** The steps after `stepId`, so a conversation cut short can be replayed. */
+  function tailAfter(stepId) {
+    return steps => {
+      if (!Array.isArray(steps)) return steps;
+      const index = steps.findIndex(step => step?.id === stepId);
+      return index === -1 ? steps : steps.slice(index + 1);
+    };
+  }
+
   function selectGuardsVariant(player, npcId) {
     const stage = stageOf(player);
     const hutza = npcId === HUTZA || npcId === HUTZA_2;
     if (quest.isComplete(player)) {
       return hutza ? "post-quest-dialogue-talking-to-hutza" : "post-quest-dialogue-talking-to-stradius";
     }
+    // The case was closed but the wrap-up was cut off: it still has to complete.
+    if (stage >= STAGE_CASE_CLOSED) return STAGE_WRAP_UP;
     if (stage >= STAGE_ON_STAGE) {
       return hasFlag(player, "on.stage")
         ? "the-stage-talking-to-hutza"
@@ -727,6 +786,8 @@ module.exports = function registerDeathOnTheIsleQuest(api) {
       return "the-backstage-talking-to-hutza-or-stradius";
     }
     if (stage >= STAGE_ADALA_GONE) {
+      // Adala was escorted away but the departure was cut short: replay the tail.
+      if (stage < STAGE_ACCUSATION_DONE) return ACCUSATION_AFTERMATH;
       return hutza ? "the-accusation-talking-to-hutza" : "the-accusation-talking-to-stradius";
     }
     if (stage >= STAGE_ACCUSATIONS) {
@@ -738,7 +799,7 @@ module.exports = function registerDeathOnTheIsleQuest(api) {
         : "the-investigation-talking-to-hutza-or-stradius-after-pickpocketing-everyone";
     }
     if (stage >= STAGE_PICKPOCKET) {
-      return allEvidence(player)
+      return allEvidence(player) && (hasFlag(player, "given") || holdsEvidence(player))
         ? "the-investigation-talking-to-hutza-or-stradius-after-pickpocketing-everyone"
         : "the-investigation-talking-to-hutza-or-stradius-without-pickpocketing-everyone";
     }
@@ -814,6 +875,12 @@ module.exports = function registerDeathOnTheIsleQuest(api) {
         "the-investigation-talking-to-hutza-or-stradius-after-pickpocketing-everyone",
         selectFromMenu
       );
+    }
+    if (variant === ACCUSATION_AFTERMATH) {
+      return playVariant(player, npcId, variant, tailAfter("k5CJTB"));
+    }
+    if (variant === STAGE_WRAP_UP) {
+      return playVariant(player, npcId, variant, tailAfter("wdaiPu"));
     }
     return playVariant(player, npcId, variant);
   }
@@ -1110,6 +1177,7 @@ module.exports = function registerDeathOnTheIsleQuest(api) {
       const last = intro.filter(step => step.type === 'line').at(-1)?.text;
       if (last) at(last, 14, 16, () => setFlag(player, `met.${info.key}`));
     }
+    at('But did you find anything that could tell us who did it?', 40, 40, () => setFlag(player, 'accusation.intro'));
     at("Well then we'll have to just speed things along a bit. I'm going out there!", 40, 40, () => advance(42));
     at('Argh! You\'re stronger than I thought... I need to regroup!', 42, 42, () => advance(45));
     at('Aha, villain! This is where you fall!', 45, 45, () => { setFinalFight(player, 2); player.setAttribute(flagKey('fight.step'), 2); });
@@ -1175,7 +1243,7 @@ module.exports = function registerDeathOnTheIsleQuest(api) {
       equipment[Equipment.BODY_SLOT] = [UNIFORM_TOP_VILLA, 1, null];
       equipment[Equipment.LEG_SLOT] = [UNIFORM_BOTTOM_VILLA, 1, null];
       equipment[Equipment.HEAD_SLOT] = [MASKS[maskAssignment(player) - 1], 1, null];
-      equipment[Equipment.WEAPON_SLOT] = [TRAY, 1, null];
+      equipment[Equipment.WEAPON_SLOT] = [VILLA_TRAY, 1, null];
       swapGear(player, GEAR_ATTRIBUTE, VILLA_GEAR_ATTRIBUTE, { inventory: blank(player.getInventory()), equipment });
     }
     fadeMove(player, () => { if (stageOf(player) < STAGE_ENTERED) quest.setStage(player, STAGE_ENTERED); player.moveTo(INSIDE_PARTY); });
@@ -1243,9 +1311,9 @@ module.exports = function registerDeathOnTheIsleQuest(api) {
     const { player, stepId } = event;
     if (!player || !stepId || !event.pages?.some(page => page.page === PAGE)) return;
     const boxes = {
-      '0NeKgL': [UNIFORM_TOP_VILLA, UNIFORM_BOTTOM_VILLA],
+      '0NeKgL': [UNIFORM_TOP, UNIFORM_BOTTOM],
       '5z2Lhi': [WINE_LABELS], SsD2Fw: [THREATENING_NOTE], Adb65_: [DRINKING_FLASK], XXxTM6: [SHIPPING_CONTRACT],
-      JwtSTS: [WINE_LABELS, THREATENING_NOTE], FTSXlx: [CHEST_KEY], '1XIQ80': [ICON],
+      JwtSTS: [WINE_LABELS, DRINKING_FLASK], FTSXlx: [CHEST_KEY], '1XIQ80': [ICON],
     };
     if (boxes[stepId]) { event.handled = true; event.box = { items: boxes[stepId] }; }
     if (boxes[stepId]?.some(id => EVIDENCE_ITEMS.includes(id)) && stepId !== 'JwtSTS' && player.getInventory().getFreeSlots() < 1) {
@@ -1521,8 +1589,8 @@ module.exports = function registerDeathOnTheIsleQuest(api) {
       return;
     }
     if (player.getInventory().getFreeSlots() < 2) { player.sendMessage('You need two free inventory spaces.'); return; }
-    addItem(player, UNIFORM_TOP_VILLA);
-    addItem(player, UNIFORM_BOTTOM_VILLA);
+    addItem(player, UNIFORM_TOP);
+    addItem(player, UNIFORM_BOTTOM);
     playVariant(player, PATZI, "getting-a-uniform-stealing-a-uniform");
   }
 
@@ -1751,6 +1819,7 @@ module.exports = function registerDeathOnTheIsleQuest(api) {
 
   function handleLogout({ player }) {
     if (!player) return;
+    clearChangingBookshelf(player);
     removeAllSpawns(player);
     Scenes.end(player, true); Scenes.cancel(player);
   }
