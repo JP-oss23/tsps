@@ -282,6 +282,21 @@ export class CacheDefinitions {
         return this.getGamevals().namesOf(GamevalKind.SPOTANIM);
     }
 
+    /** Every named varbit: id -> gameval name. */
+    static getVarbitNames(): ReadonlyMap<number, string> {
+        return this.getGamevals().namesOf(GamevalKind.VARBIT);
+    }
+
+    /** Every named db row: id -> gameval name. */
+    static getDbRowNames(): ReadonlyMap<number, string> {
+        return this.getGamevals().namesOf(GamevalKind.DBROW);
+    }
+
+    /** Every named db table: id -> gameval name. */
+    static getDbTableNames(): ReadonlyMap<number, string> {
+        return this.getGamevals().namesOf(GamevalKind.DBTABLE);
+    }
+
     /** Every named varp: id -> gameval name. */
     static getVarpNames(): ReadonlyMap<number, string> {
         return this.getGamevals().namesOf(GamevalKind.VARP);
@@ -424,6 +439,45 @@ export class CacheDefinitions {
 
     static getSeq(id: number): SequenceType {
         return this.getState().sequences.load(id);
+    }
+
+    static getSeqCount(): number {
+        return this.getState().sequences.getCount();
+    }
+
+    static getSpotanimCount(): number {
+        return this.getState().spotAnims.getCount();
+    }
+
+    /**
+     * Whether a definition id exists, by asking the archive or the registry rather than by decoding:
+     * a loader answers an unknown id with a default object, which is indistinguishable from a real
+     * definition that happens to hold default values.
+     */
+    static hasDefinition(kind: string, id: number): boolean | undefined {
+        if (!Number.isInteger(id) || id < 0) return false;
+        const state = this.getState();
+        const counts = this.getCounts();
+        switch (kind) {
+            case "loc":
+                return id < counts.objects || state.archives.ids("loc").includes(id);
+            case "npc":
+                return id < counts.npcs || state.archives.ids("npc").includes(id);
+            case "item":
+                return id < counts.items || this.customItems.has(id) || state.archives.ids("obj").includes(id);
+            case "varbit":
+                return state.varbits.archive.getFile(id) !== undefined;
+            case "seq":
+                return state.sequences.archive.getFile(id) !== undefined;
+            case "spotanim":
+                return state.spotAnims.archive.getFile(id) !== undefined;
+            case "dbro":
+                return this.getDbRow(id) !== undefined;
+            default:
+                // Structs, enums, db tables, varps, inventories, sprites, sounds and params cannot be
+                // proven absent from an empty result, so they answer "unknown" rather than a guess.
+                return undefined;
+        }
     }
 
     static getSpotanim(id: number): SpotAnimType {

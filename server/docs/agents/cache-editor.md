@@ -32,20 +32,33 @@ Agent MCP tools, all read-only:
 | `cache_search { text, kind?, limit? }` | ids by gameval name (`ent_totems_site_1_base`) or by id, custom items included |
 | `cache_used_by { kind, id }` | which locs, npcs and items point at this id |
 
-`cache_inspect` link states are deliberately three-valued:
+Links cover every reference field in the table, including `params` on locs, npcs, items and structs,
+an npc's `modelIds`/`chatheadModelIds`, an item's `countObj` and `notedId`/`placeholder`, a loc's
+`randomSeqIds`/`ambientSoundIds`, and a sequence's held items. The reverse index is keyed on the
+overlay state as well as the cache, so installing a definition archive or adding a custom item
+rebuilds it instead of answering from a stale scan.
 
-- `known` — the id resolves (a named gameval entry, or a decoded definition).
-- `missing` — a decoded kind has no such definition.
-- `unverified` — this server has no decoder for that kind yet (models, sprites, sounds, and the
-  not-yet-decoded sequences, spotanims, varps). The id and name are still reported; fields are not
-  invented.
+`cache_inspect` link states are three-valued, and the order matters: the **archive or overlay
+registry answers first**, and the gameval name list is only a fallback for an id that cannot be
+proven absent.
+
+- `known` — the cache actually holds it (`CacheDefinitions.hasDefinition`), including real locs that
+  have no gameval name.
+- `missing` — the archive proved it absent: a counted kind past the end (`loc`, `npc`, `item`) or an
+  id with no file in `varbit`, `seq`, `spotanim`, `dbro`.
+- `unverified` — the target is not a decoded definition (models, sprites, sounds, frames) **or** its
+  absence cannot be proven (structs, enums, DB tables, varps, inventories answer "unknown" rather
+  than pretending). The id and name are reported; fields are never invented.
+
+An id that does not exist returns `{ exists: false }` and no values at all — a loader answering with
+a default object is not evidence that a definition is there.
 
 Real output for loc 1, which is the whole point of the tool:
 
 ```
 loc 1  "Crate"
   seqId  3206  → seq quest_mcannon_crate_shake   known       (the loc's animation)
-  objIds 15402 → model                          unverified  (a model file, not a definition)
+  models 15402 → model                          unverified  (a model file, not a definition)
 
 cache_used_by seq 3206 → 3 locs: 1 (Crate), 15599 (Crate), 15600 (Crates)
 
@@ -72,7 +85,20 @@ graphic 1 firebreath_attack → modelId 17549 (unverified) + animationId 86 → 
 A sequence's frames are **not** definitions — they live in the frame archive — so a frame link
 reports `unverified` and says why, rather than inventing a kind.
 
-## The authoring half (next)
+## Authoring, partially built
+
+`Document.CacheEditor.cjs` is the canonical overlay document
+(`server/data/definitions/custom-definitions.json`): rows of `{ kind, id, baseId, fields }`, overlay
+ids starting above the cache's own count for the kind, validated for unknown fields, dangling links,
+self-references, duplicate ids and the real compressed transport budget.
+
+`Authoring.CacheEditor.plugin.js` is the only writable surface: loopback only, on
+`WEBSOCKET_PORT + 1101`, opened by `CACHE_EDITOR_ENABLED=1`, with the item editor's guards — origin
+allow-list matched to `PORT`, 1 MiB body, atomic temp-file replace, revision conflict on stale
+clients, and a restart notice after saving. `Catalog.CacheEditor.plugin.js` serves the reads at
+`/api/cache-kinds`, `/api/cache-inspect`, `/api/cache-search` and `/api/cache-used-by`.
+
+Saving writes overlay rows; **applying them to the running world is still the open piece**.
 
 Order, because each step is what the next one reads:
 

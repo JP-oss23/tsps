@@ -7,7 +7,7 @@
 // or `unverified` (no decoder for that kind yet), and a multi-def says so instead of pretending the
 // id it was asked about is the thing a player sees.
 
-const { KINDS, kindOf, fieldsOf, referenceFields, referencedKinds, readField } = require("./Fields.CacheEditor");
+const { KINDS, CUSTOM_ITEM_RANGE, kindOf, fieldsOf, referenceFields, referencedKinds, readField } = require("./Fields.CacheEditor");
 
 /** Name maps the cache exposes, by kind. Missing entries mean "this server has no reverse map yet". */
 function namesOf(core, kind) {
@@ -19,6 +19,10 @@ function namesOf(core, kind) {
     case "seq": return cache.getSeqNames();
     case "spotanim": return cache.getSpotanimNames?.();
     case "varp": return cache.getVarpNames?.();
+    case "varbit": return cache.getVarbitNames?.();
+    case "dbro": return cache.getDbRowNames?.();
+    case "dbtable": return cache.getDbTableNames?.();
+    case "inv": return cache.getInventoryNames?.();
     default: return undefined;
   }
 }
@@ -67,18 +71,31 @@ function nameOf(core, kind, id) {
   return null;
 }
 
-/** `known` / `missing` / `unverified` for one id in one kind. */
+/** The id space a kind is known to occupy, when the cache reports it. */
+function countOf(core, kind) {
+  const counts = core.CacheDefinitions.getCounts();
+  switch (kind) {
+    case "loc": return counts.objects;
+    case "npc": return counts.npcs;
+    case "item": return counts.items;
+    default: return null;
+  }
+}
+
+/**
+ * `known` / `missing` / `unverified` for one id in one kind.
+ *
+ * Only a kind with a known id space can be proven absent. Sequences, graphics and varps have no
+ * reported count, and gamevals do not name every id, so an id that is merely unnamed stays
+ * `unverified` — the alternative is calling real entries missing.
+ */
 function resolveId(core, kind, id) {
   if (!Number.isInteger(id) || id < 0) return "missing";
-  const entry = KINDS[kind] ?? {};
-  const names = namesOf(core, kind);
-  if (names) return names.has(id) ? "known" : "unverified";
-  if (entry.decoded) {
-    const definition = definitionOf(core, kind, id);
-    if (definition === undefined || definition === null) return "missing";
-    return "known";
-  }
-  return "unverified";
+  // The archive answers existence; the name list only adds an id we could not prove absent.
+  const known = core.CacheDefinitions.hasDefinition?.(kind, id);
+  if (known === true) return "known";
+  if (known === false) return "missing";
+  return namesOf(core, kind)?.has?.(id) ? "known" : "unverified";
 }
 
 const values = (value) => (Array.isArray(value) ? value : [value]).filter((entry) => Number.isInteger(entry) && entry >= 0);
@@ -90,6 +107,9 @@ const values = (value) => (Array.isArray(value) ? value : [value]).filter((entry
 function describe(core, { kind, id, player = null, skipUnset = true }) {
   const entry = kindOf(kind);
   if (!Number.isInteger(id) || id < 0) throw new Error(`A ${kind} id must be a non-negative integer`);
+  if (core.CacheDefinitions.hasDefinition?.(kind, id) === false) {
+    return { kind, id, name: null, label: entry.label, exists: false, note: `No ${kind} ${id} in this cache.` };
+  }
   const definition = definitionOf(core, kind, id);
   const fields = fieldsOf(kind);
   const out = {
@@ -97,7 +117,7 @@ function describe(core, { kind, id, player = null, skipUnset = true }) {
     id,
     name: nameOf(core, kind, id),
     label: entry.label,
-    custom: kind === "item" && id >= 50000 ? customItems(core).some((row) => row.id === id) : false,
+    custom: kind === "item" && id >= CUSTOM_ITEM_RANGE ? customItems(core).some((row) => row.id === id) : false,
   };
   if (!definition) {
     out.note = `No ${kind} decoder on this server yet; the id and its name resolve, its fields do not.`;
@@ -111,11 +131,13 @@ function describe(core, { kind, id, player = null, skipUnset = true }) {
   for (const field of fields ?? []) {
     const value = readField(kind, definition, field.name);
     if (value === undefined || value === null) continue;
-    if (skipUnset && !field.ref && (value === -1 || value === "" || (Array.isArray(value) && value.length === 0))) continue;
+    if (skipUnset && (value === -1 || value === "" || (Array.isArray(value) && value.length === 0)
+      || (value instanceof Map && value.size === 0))) continue;
     out.values[field.name] = Array.isArray(value) ? value : value instanceof Map ? Object.fromEntries(value) : value;
     if (!field.ref) continue;
-    for (const target of values(value)) {
-      if (target === -1) continue;
+    // A param map's keys are the links; the values are just data.
+    const targets = value instanceof Map ? [...value.keys()] : values(value);
+    for (const target of targets) {
       out.links.push({
         field: field.name,
         kind: field.ref,
@@ -133,16 +155,21 @@ function describe(core, { kind, id, player = null, skipUnset = true }) {
       : definition.transformVarp >= 0
         ? { kind: "varp", id: definition.transformVarp, name: nameOf(core, "varp", definition.transformVarp) }
         : null;
+    const children = transforms.filter((child) => Number.isInteger(child) && child >= 0);
     out.transforms = {
       gatedBy,
-      children: transforms.filter((child) => Number.isInteger(child) && child >= 0)
-        .map((child) => ({ id: child, name: nameOf(core, kind, child), exists: resolveId(core, kind, child) })),
+      children: children.map((child, index) => ({
+        id: child, name: nameOf(core, kind, child), exists: resolveId(core, kind, child),
+        ...(index === children.length - 1 ? { fallback: true } : {}),
+      })),
       note: "This id is a placeholder: a player sees the child its gating variable selects.",
     };
-    if (player && kind === "loc") {
+    if (player && (kind === "loc" || kind === "npc")) {
       try {
-        const resolved = core.ObjectDefinition.forPlayer(id, player);
-        out.transforms.resolvedForPlayer = resolved?.id ?? null;
+        const resolved = kind === "loc"
+          ? core.ObjectDefinition.forPlayer(id, player)?.id
+          : core.CacheDefinitions.resolveNpc(id, player.getPacketSender())?.id;
+        out.transforms.resolvedForPlayer = resolved ?? null;
       } catch {
         out.transforms.resolvedForPlayer = null;
       }
@@ -189,10 +216,21 @@ function search(core, { kind = null, text = "", limit = 20 }) {
 // Reverse index, built once per loaded cache: target kind -> id -> who points at it.
 let index;
 
+/** Changes whenever an overlay, a custom item or a definition archive is installed. */
+function overlayState(core) {
+  try {
+    const counts = core.CacheDefinitions.getCounts();
+    return JSON.stringify([counts, customItems(core).length, core.CacheDefinitions.getDefinitionArchiveBundles?.().length ?? 0]);
+  } catch {
+    return "unknown";
+  }
+}
+
 function buildIndex(core, sourceKinds) {
   const cache = core.CacheDefinitions;
-  if (index?.cache === cache && sourceKinds.every((kind) => index.done.has(kind))) return index;
-  if (index?.cache !== cache) index = { cache, done: new Set(), map: new Map() };
+  const state = overlayState(core);
+  if (index?.cache === cache && index?.state === state && sourceKinds.every((kind) => index.done.has(kind))) return index;
+  if (index?.cache !== cache || index?.state !== state) index = { cache, state, done: new Set(), map: new Map() };
   for (const source of sourceKinds) {
     if (index.done.has(source)) continue;
     const refs = referenceFields(source);
@@ -212,6 +250,14 @@ function buildIndex(core, sourceKinds) {
       }
     }
     index.done.add(source);
+  }
+  if (sourceKinds.includes("item")) {
+    for (const row of customItems(core)) {
+      for (const target of values(row.itemDef?.countObj ?? row.countObj ?? [])) {
+        const key = `item:${target}`;
+        index.map.set(key, [...(index.map.get(key) ?? []), { kind: "item", id: row.id, name: row.objType?.name ?? null, field: "custom" }]);
+      }
+    }
   }
   return index;
 }

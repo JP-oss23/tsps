@@ -40,9 +40,10 @@ const FIELDS = {
     field("name", "string"),
     field("desc", "string"),
     field("category", "int"),
-    field("objIds", "int[]", { ref: "model", many: true }),
+    field("models", "int[]", { ref: "model", many: true, note: "model ids, flattened across the cache's groups" }),
     field("sizeX", "int"), field("sizeY", "int"),
     field("seqId", "int", { ref: "seq", note: "the loc's animation" }),
+    field("randomSeqIds", "int[]", { ref: "seq", many: true, note: "played at random when the loc is interacted with" }),
     field("ambient", "int"), field("contrast", "int"),
     field("actions", "string[]"),
     field("recolorFrom", "int[]"), field("recolorTo", "int[]"),
@@ -50,6 +51,7 @@ const FIELDS = {
     field("mapSceneId", "int", { ref: "sprite" }),
     field("mapFunctionId", "int"),
     field("ambientSoundId", "int", { ref: "sound" }),
+    field("ambientSoundIds", "int[]", { ref: "sound", many: true }),
     field("contourGroundParam", "int", { ref: "param" }),
     field("contouredGround", "int"), field("contourGroundType", "int"),
     field("clipType", "int"), field("clipMask", "int"),
@@ -60,6 +62,7 @@ const FIELDS = {
     field("supportItems", "int"),
     field("flipMapSceneSprite", "boolean"),
     field("decorDisplacement", "int"),
+    field("params", "map", { ref: "param", note: "param id -> value" }),
     field("transformVarbit", "int", { ref: "varbit", multi: "transforms" }),
     field("transformVarp", "int", { ref: "varp", multi: "transforms" }),
     field("transforms", "int[]", { ref: "loc", many: true, transform: true }),
@@ -68,6 +71,8 @@ const FIELDS = {
     field("name", "string"),
     field("desc", "string"),
     field("category", "int"),
+    field("modelIds", "int[]", { ref: "model", many: true }),
+    field("chatheadModelIds", "int[]", { ref: "model", many: true }),
     field("size", "int"),
     field("combatLevel", "int"),
     field("attackLevel", "int"), field("defenceLevel", "int"), field("strengthLevel", "int"),
@@ -95,6 +100,7 @@ const FIELDS = {
     field("drawMapDot", "boolean"), field("drawPriority", "int"),
     field("isInteractable", "boolean"), field("isClickable", "boolean"),
     field("isClipped", "boolean"),
+    field("params", "map", { ref: "param", note: "param id -> value" }),
     field("transformVarbit", "int", { ref: "varbit", multi: "transforms" }),
     field("transformVarp", "int", { ref: "varp", multi: "transforms" }),
     field("transforms", "int[]", { ref: "npc", many: true, transform: true }),
@@ -112,6 +118,7 @@ const FIELDS = {
     field("price", "int"), field("weight", "number"), field("team", "int"),
     field("wearPos", "int"), field("category", "int"),
     field("isMembers", "boolean"), field("isTradable", "boolean"), field("isUnlockable", "boolean"),
+    field("countObj", "int[]", { ref: "item", many: true, note: "items this one counts, for stack variants" }),
     field("note", "int", { ref: "item" }),
     field("noteTemplate", "int", { ref: "item" }),
     field("unnotedId", "int", { ref: "item" }),
@@ -160,13 +167,10 @@ const FIELDS = {
   ],
 };
 
-/** Loc fields that carry a model list live as `models[][]`; that is what `objIds` means. */
+/** A loc carries its model ids as `models[][]`, one group per model type; the field is flattened. */
 const READERS = {
   loc: {
-    objIds: (definition) => (definition.models ?? []).flat(),
-  },
-  item: {
-    recolorFrom: (definition) => definition.recolorFrom,
+    models: (definition) => (definition.models ?? []).flat(),
   },
 };
 

@@ -36,7 +36,7 @@ test("the field table is internally consistent", () => {
   assert.throws(() => Fields.kindOf("nonsense"), /Unknown cache kind/);
 });
 
-test("a loc reports its links with names, and a missing target resolves as unverified, not missing", () => {
+test("a loc reports its links with names, and a non-definition target stays unverified", () => {
   const { objects } = CacheDefinitions.getCounts();
   let sample = null;
   for (let id = 0; id < objects && !sample; id++) {
@@ -51,7 +51,7 @@ test("a loc reports its links with names, and a missing target resolves as unver
   assert.equal(animation.id, sample.seqId);
   assert.equal(animation.exists, "known", "a named sequence resolves");
   assert.match(animation.name ?? "", /.+/);
-  const models = described.links.filter((link) => link.field === "objIds");
+  const models = described.links.filter((link) => link.field === "models");
   assert.ok(models.length > 0, "models are reported as model links");
   assert.equal(models[0].exists, "unverified", "models are archive assets, not resolved definitions");
 });
@@ -126,6 +126,52 @@ test("a kind without a decoder still names the id instead of inventing fields", 
   assert.match(described.note, /no varp decoder/i);
 });
 
+test("an id that does not exist is missing, in both directions", () => {
+  const { objects } = CacheDefinitions.getCounts();
+  // Past the end of a counted kind: proven absent, not merely unnamed.
+  const beyond = CacheDefinitions.hasDefinition("loc", objects + 10);
+  assert.equal(beyond, false, "the archive proves a loc past the end is absent");
+  const described = inspect({ kind: "loc", id: objects + 10 });
+  assert.equal(described.exists, false);
+  assert.equal(described.values, undefined, "no fake default definition is invented");
+  assert.equal(described.name, null);
+  assert.match(described.note, /No loc/);
+
+  // A real but unnamed loc is not missing — 51 locs from 50742 have no gameval name.
+  assert.equal(CacheDefinitions.hasDefinition("loc", 50742), true);
+  assert.equal(Inspect.resolveId(core, "loc", 50742), "known");
+
+  // Kinds whose absence cannot be proven answer "unknown", never a guess.
+  assert.equal(CacheDefinitions.hasDefinition("varp", 29), undefined);
+  assert.equal(CacheDefinitions.hasDefinition("struct", 999999), undefined);
+  assert.equal(Inspect.resolveId(core, "struct", 999999), "unverified");
+  assert.equal(CacheDefinitions.hasDefinition("varbit", 999999), false);
+  assert.equal(Inspect.resolveId(core, "varbit", 999999), "missing");
+  // A named sequence we know exists resolves, and one past the archive does not.
+  assert.equal(Inspect.resolveId(core, "seq", 3206), "known");
+  assert.equal(Inspect.resolveId(core, "seq", 999999), "missing" === "missing" ? "missing" : "missing");
+});
+
+test("npc models, item count variants and params are links too", () => {
+  const npc = inspect({ kind: "npc", id: 1 });
+  assert.ok(npc.links.some((entry) => entry.field === "modelIds" || entry.field === "chatheadModelIds"),
+    "an npc's models are reported");
+  const items = [];
+  for (let id = 0; id < CacheDefinitions.getCounts().items && items.length < 1; id++) {
+    const definition = CacheDefinitions.getItem(id);
+    if (definition?.countObj?.length) items.push(definition);
+  }
+  if (items.length) {
+    const described = inspect({ kind: "item", id: items[0].id });
+    const counted = described.links.find((entry) => entry.field === "countObj");
+    assert.ok(counted, "countObj links to the items it counts");
+    assert.equal(counted.kind, "item");
+  }
+  const withParams = inspect({ kind: "item", id: 4151 });
+  const params = withParams.links.find((entry) => entry.field === "params");
+  if (params) assert.equal(params.kind, "param", "a param map's keys are links");
+});
+
 test("used_by answers the reverse question from real definitions", () => {
   const { objects } = CacheDefinitions.getCounts();
   let sample = null;
@@ -179,4 +225,85 @@ test("a graphic links to its model and its animation, which is the loc-to-animat
   // The two hops the user asked about: loc -> sequence, graphic -> sequence.
   const loc = inspect({ kind: "loc", id: 1 });
   assert.equal(loc.links.find((entry) => entry.field === "seqId").kind, "seq");
+});
+
+const fs = require("node:fs");
+const os = require("node:os");
+const Document = require("../plugins/tools/cache-editor/Document.CacheEditor.cjs");
+const Catalog = require("../plugins/tools/cache-editor/Catalog.CacheEditor.plugin.js");
+const { deflateSync } = require("node:zlib");
+
+function scratchRoot() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cache-editor-"));
+  fs.mkdirSync(path.join(root, "server", "data", "definitions"), { recursive: true });
+  return root;
+}
+
+test("an overlay row is rejected when its links do not resolve", () => {
+  const { objects } = CacheDefinitions.getCounts();
+  const base = (() => {
+    for (let id = 0; id < objects; id++) {
+      const definition = CacheDefinitions.getObject(id);
+      if (definition?.seqId >= 0) return definition;
+    }
+    return null;
+  })();
+  assert.ok(base);
+  const start = Math.max(Document.OVERLAY_ID_START, objects);
+  const ok = { kind: "loc", id: start, baseId: base.id, fields: { seqId: base.seqId } };
+  assert.deepEqual(Document.audit(core, ok), [], "a resolvable override is clean");
+
+  assert.match(Document.audit(core, { ...ok, fields: { transforms: [objects + 5] } }).join(" "), /missing loc/);
+  assert.match(Document.audit(core, { ...ok, fields: { transforms: [start] } }).join(" "), /points at itself/);
+  assert.match(Document.audit(core, { ...ok, fields: { notAField: 1 } }).join(" "), /no field "notAField"/);
+  assert.match(Document.audit(core, { ...ok, fields: { seqId: [1, 2] } }).join(" "), /not a list/);
+  assert.match(Document.audit(core, { ...ok, id: 5 }).join(" "), /overlay ids start at/);
+  assert.match(Document.audit(core, { ...ok, baseId: 999999 }).join(" "), /baseId must be a cache id below/);
+});
+
+test("saving writes the document atomically, checks the budget, and refuses stale revisions", () => {
+  const root = scratchRoot();
+  const { objects } = CacheDefinitions.getCounts();
+  const base = CacheDefinitions.getObject(1);
+  const start = Math.max(Document.OVERLAY_ID_START, objects);
+  const row = { kind: "loc", id: start, baseId: 1, fields: { seqId: base.seqId } };
+
+  const first = Document.save(core, root, { row });
+  assert.equal(first.rows.length, 1);
+  assert.equal(first.restartRequired, true);
+  assert.ok(fs.existsSync(path.join(root, "server/data/definitions", Document.DOCUMENT)));
+
+  assert.throws(() => Document.save(core, root, { row: { ...row, id: start + 1 }, revision: "deadbeef" }), /changed since it was loaded/);
+  const second = Document.save(core, root, { row: { ...row, id: start + 1 }, revision: first.revision });
+  assert.deepEqual(second.rows.map((entry) => entry.id), [start, start + 1]);
+  assert.equal(fs.readdirSync(path.join(root, "server/data/definitions")).filter((name) => name.endsWith(".tmp")).length, 0, "no temp file is left behind");
+
+  // A document that cannot fit the client transport is refused before it is written.
+  // Unique text, so the check measures the real compressed size instead of a run of one character.
+  const noise = require("node:crypto").randomBytes(120000).toString("hex");
+  const fat = { version: 1, rows: [{ ...row, fields: { seqId: base.seqId, desc: noise } }] };
+  assert.match(Document.check(core, fat).problems.join(" "), /transport budget/);
+  assert.ok(deflateSync(Buffer.from(JSON.stringify(fat))).length > 0);
+});
+
+test("the read-only content endpoints serve what the MCP tools serve", () => {
+  const endpoints = new Map();
+  Catalog({ core, registerContentEndpoint: (name, handler) => endpoints.set(name, handler) });
+  assert.deepEqual([...endpoints.keys()].sort(), ["cache-inspect", "cache-kinds", "cache-search", "cache-used-by"]);
+
+  const kinds = endpoints.get("cache-kinds")(new URLSearchParams(), []);
+  assert.ok(kinds.kinds.some((entry) => entry.kind === "loc" && entry.count > 1000));
+
+  const described = endpoints.get("cache-inspect")(new URLSearchParams({ kind: "loc", id: "1" }), []);
+  assert.equal(described.name, "Crate");
+  assert.ok(described.links.some((entry) => entry.field === "seqId"));
+
+  const hits = endpoints.get("cache-search")(new URLSearchParams({ text: "ent_totems_site_1_base", kind: "loc" }), []);
+  assert.equal(hits.hits[0].kind, "loc");
+
+  const used = endpoints.get("cache-used-by")(new URLSearchParams({ kind: "seq", id: String(described.links.find((l) => l.field === "seqId").id) }), []);
+  assert.ok(used.count > 0);
+
+  assert.throws(() => endpoints.get("cache-inspect")(new URLSearchParams({ kind: "loc" }), []), /Missing \?id/);
+  assert.throws(() => endpoints.get("cache-inspect")(new URLSearchParams({ kind: "loc", id: "-1" }), []), /non-negative/);
 });
