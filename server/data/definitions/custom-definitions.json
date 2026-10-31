@@ -1,15 +1,4 @@
 {
   "version": 1,
-  "rows": [
-    {
-      "kind": "npc",
-      "id": 50000,
-      "baseId": 30,
-      "fields": {
-        "rangedLevel": 0,
-        "magicLevel": 0,
-        "transformVarbit": 0
-      }
-    }
-  ]
+  "rows": []
 }
