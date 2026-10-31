@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fetchContent, getContentApiBase } from "../../network/serverConnection/contentApi";
 import type { OsrsClient } from "../../game/OsrsClient";
-import { createPreviewRenderer, previewSpec, sequenceFrameCount, type PreviewRenderer } from "./CacheEditorPreview";
+import { createPreviewRenderer, previewSpec, sequenceFrameCount, shapeLabel, type PreviewRenderer } from "./CacheEditorPreview";
+import { LocModelType } from "../../rs/config/loctype/LocModelType";
 import {
     type CacheDefinition, type CacheField, type CacheKind, type CacheLink, type OverlayRow,
     authoringBase, draftProblems, draftRow, fieldsPath, inspectPath, kindsPath, linksByField,
@@ -49,6 +50,9 @@ export function CacheEditor({ client }: { client?: OsrsClient }) {
     const [pickable, setPickable] = useState<CacheField[]>([]);
     const [previewError, setPreviewError] = useState<string | null>(null);
     const [frame, setFrame] = useState(0);
+    const [shape, setShape] = useState<LocModelType>(LocModelType.NORMAL);
+    const [rotation, setRotation] = useState(0);
+    const [shapes, setShapes] = useState<Array<{ type: LocModelType; label: string }>>([]);
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const rendererRef = useRef<PreviewRenderer | null>(null);
     const [pick, setPick] = useState<{ field: string; text: string; hits: Array<{ kind: string; id: number; name: string | null }> } | null>(null);
@@ -167,8 +171,15 @@ export function CacheEditor({ client }: { client?: OsrsClient }) {
             return;
         }
         rendererRef.current ??= createPreviewRenderer(client);
-        setPreviewError(rendererRef.current.draw(canvasRef.current, spec));
-    }, [client, spec, tab]);
+        if (definition?.kind === "loc") {
+            const available = rendererRef.current.locShapes(definition.id);
+            setShapes(available);
+            if (available.length && !available.some((entry) => entry.type === shape)) setShape(available[0].type);
+        } else setShapes([]);
+        setPreviewError(rendererRef.current.draw(canvasRef.current, {
+            kind: definition?.kind ?? "", id: definition?.id ?? 0, spec, shape, rotation,
+        }));
+    }, [client, definition?.id, definition?.kind, rotation, shape, spec, tab]);
 
     // Animate a sequence while its tab is open, at the frame delay the cache declares.
     useEffect(() => {
@@ -243,6 +254,16 @@ export function CacheEditor({ client }: { client?: OsrsClient }) {
                         <div>
                             {previewError ? <p style={{ color: "#c9b06a" }}>{previewError}</p> : null}
                             <canvas ref={canvasRef} width={220} height={220} style={{ background: "#0b0d11", border: "1px solid #262a33" }} />
+                            {definition.kind === "loc" && shapes.length > 0 ? (
+                                <div style={{ marginTop: 6, display: "flex", gap: 6, alignItems: "center" }}>
+                                    <select style={styles.input} value={shape} onChange={(event) => setShape(Number(event.target.value) as LocModelType)}>
+                                        {shapes.map((entry) => <option key={entry.type} value={entry.type}>{entry.label}</option>)}
+                                    </select>
+                                    <button style={styles.input} onClick={() => setRotation((current) => (current + 3) % 4)}>⟲</button>
+                                    <button style={styles.input} onClick={() => setRotation((current) => (current + 1) % 4)}>⟳</button>
+                                    <span style={{ color: "#7f8899" }}>{rotation * 90}°</span>
+                                </div>
+                            ) : null}
                             <div style={{ marginTop: 8, color: "#9aa3b2" }}>
                                 {spec
                                     ? <>models {spec.modelIds.join(", ")}{spec.sequenceId !== undefined ? ` · sequence ${spec.sequenceId}${frames > 1 ? ` (${frames} frames)` : ""}` : ""}</>

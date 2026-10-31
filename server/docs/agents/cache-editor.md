@@ -130,9 +130,19 @@ non-`http:` world.
   - `transforms` shows the gating variable, the children, which one is the fallback, and — with a
     player — which child that player currently sees.
 - **Preview:** drawn by the client's own software model renderer (`Model2DRenderer`), so no WebGL
-  context and no game render loop are needed. A definition is *one merged model* — a loc carries its
-  parts grouped, an npc and an item flat — oriented by its own zoom/rotation/offset fields and lit by
-  its ambient/contrast. A sequence plays at 120 ms per frame while the tab is open: a loc's `seqId`,
+  context and no game render loop are needed. Each kind goes through **its own builder**, because the
+  geometry genuinely differs:
+
+  | Kind | Builder | What matters |
+  | --- | --- | --- |
+  | loc | `LocModelLoader.getModel(locType, shape, rotation)` | which `types` group the shape selects, mirroring, `modelSize*` resize, `offset*` translate, lighting |
+  | npc | `NpcModelLoader.getModel(npcType, seq, frame)` | transforms (multi-npc), stance animations, recolours |
+  | item | `ObjModelLoader.getModel(id, count)` | inventory model plus recolours and custom-model overlays |
+  | spotanim | merged `modelId` + the renderer's sequence frame | model, then the graphic's animation |
+
+  A loc is not "a model": the same loc placed as a wall and as a centrepiece is different geometry, so
+  the preview offers the shapes the definition actually carries (`types`) and a quarter-turn control.
+  Kinds without a builder fall back to merging `models`/`modelIds` directly. A sequence plays at 120 ms per frame while the tab is open: a loc's `seqId`,
   an npc's `idleSeqId`, a graphic's `animationId`. A definition with no models says so, and a model
   missing from the archive names the id rather than drawing an empty square.
 - **Draft (footer):** the `{ kind, id, baseId, fields }` row as it will be written, with local

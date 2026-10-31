@@ -1,4 +1,8 @@
 import type { OsrsClient } from "../../game/OsrsClient";
+import { LocModelLoader } from "../../rs/config/loctype/LocModelLoader";
+import { NpcModelLoader } from "../../rs/config/npctype/NpcModelLoader";
+import { ObjModelLoader } from "../../rs/config/objtype/ObjModelLoader";
+import { LocModelType } from "../../rs/config/loctype/LocModelType";
 import { Model } from "../../rs/model/Model";
 import { Model2DRenderer } from "../../ui/model/Model2DRenderer";
 import type { CacheDefinition } from "./CacheEditorModel";
@@ -82,9 +86,41 @@ export function sequenceFrameCount(client: OsrsClient, sequenceId: number | unde
     }
 }
 
+/**
+ * How a loc is drawn. A loc is not "a model": its `models` are grouped by `types`, and which group is
+ * drawn depends on the shape it is placed as (`LocModelType`), with mirroring, model resize and offsets
+ * applied by `LocModelLoader`. A centrepiece and the same loc placed as a wall are different geometry.
+ */
+export type LocShapeOption = { type: LocModelType; label: string };
+
+export type PreviewRequest = {
+    kind: string;
+    id: number;
+    spec: PreviewSpec | null;
+    /** For locs: which placement shape to draw, and which quarter-turn. */
+    shape?: LocModelType;
+    rotation?: number;
+};
+
+const SHAPE_LABELS: Partial<Record<LocModelType, string>> = {
+    [LocModelType.WALL]: "wall",
+    [LocModelType.WALL_CORNER]: "wall corner",
+    [LocModelType.WALL_DECORATION_INSIDE]: "wall decoration (inside)",
+    [LocModelType.WALL_DECORATION_OUTSIDE]: "wall decoration (outside)",
+    [LocModelType.NORMAL]: "centrepiece",
+    [LocModelType.NORMAL_DIAGIONAL]: "diagonal",
+    [LocModelType.ROOF_SLOPED]: "roof (sloped)",
+    [LocModelType.ROOF_FLAT]: "roof (flat)",
+    [LocModelType.FLOOR_DECORATION]: "floor decoration",
+};
+
+export const shapeLabel = (type: LocModelType): string => SHAPE_LABELS[type] ?? `shape ${type}`;
+
 export type PreviewRenderer = {
-    /** Draws a spec into the canvas, or explains why it cannot. */
-    draw(canvas: HTMLCanvasElement, spec: PreviewSpec | null, size?: number): string | null;
+    /** Draws a request into the canvas, or explains why it cannot. */
+    draw(canvas: HTMLCanvasElement, request: PreviewRequest, size?: number): string | null;
+    /** The placement shapes this loc actually carries models for, so the picker offers only those. */
+    locShapes(id: number): LocShapeOption[];
 };
 
 /**
@@ -120,15 +156,74 @@ export function createPreviewRenderer(client: OsrsClient): PreviewRenderer {
         }
     }
 
+    const locModels = new LocModelLoader(
+        client.locTypeLoader, client.modelLoader, client.textureLoader,
+        client.seqTypeLoader, client.seqFrameLoader, client.skeletalSeqLoader,
+    );
+
+    /** A loc id resolved through the client's own cache, or null when the cache has no such loc. */
+    function locTypeOf(id: number) {
+        try {
+            return client.locTypeLoader?.load?.(id);
+        } catch {
+            return undefined;
+        }
+    }
+
     return {
-        draw(canvas, spec, size = 220) {
+        locShapes(id) {
+            const type = locTypeOf(id);
+            const types: LocModelType[] = type?.types?.length ? [...type.types] : [LocModelType.NORMAL];
+            return types.map((entry) => ({ type: entry, label: shapeLabel(entry) }));
+        },
+        draw(canvas, { kind, id, spec, shape = LocModelType.NORMAL, rotation = 0 }, size = 220) {
             const context = canvas.getContext("2d");
             if (!context) return "This browser cannot draw a 2D canvas";
             canvas.width = size;
             canvas.height = size;
             context.clearRect(0, 0, size, size);
             if (!spec) return "This definition has no models to draw";
-            const model = merge(spec.modelIds);
+            // Each kind has its own builder in the client, and each differs: a loc's geometry depends
+            // on the shape it is placed as, an npc's on its stance animations and transforms, an item's
+            // on its model plus recolours, and a graphic's on its model plus a sequence frame.
+            let model: Model | null = null;
+            if (kind === "npc") {
+                try {
+                    const npcType = client.npcTypeLoader?.load?.(id);
+                    if (npcType) {
+                        const npcModels = new NpcModelLoader(
+                            client.npcTypeLoader, client.modelLoader, client.textureLoader,
+                            client.seqTypeLoader, client.seqFrameLoader, client.skeletalSeqLoader,
+                            client.varManager,
+                        );
+                        model = npcModels.getModel(npcType, spec.sequenceId ?? -1, spec.sequenceFrame ?? 0) ?? null;
+                    }
+                } catch (error) {
+                    return `Could not build npc ${id}: ${String((error as Error).message ?? error)}`;
+                }
+            } else if (kind === "spotanim") {
+                // A graphic is one model plus a sequence; the renderer applies the frame below.
+                model = merge(spec.modelIds);
+                if (!model) return `Graphic ${id} has no model`;
+            } else if (kind === "item") {
+                try {
+                    const objModels = new ObjModelLoader(client.objTypeLoader, client.modelLoader, client.textureLoader);
+                    model = objModels.getModel(id, 1) ?? null;
+                } catch (error) {
+                    return `Could not build item ${id}: ${String((error as Error).message ?? error)}`;
+                }
+            } else if (kind === "loc") {
+                const type = locTypeOf(id);
+                if (type) {
+                    try {
+                        model = (locModels.getModel(type, shape, rotation) as unknown as Model) ?? null;
+                    } catch (error) {
+                        return `Could not build loc ${id} as ${shapeLabel(shape)}: ${String((error as Error).message ?? error)}`;
+                    }
+                    if (!model) return `Loc ${id} has no model for ${shapeLabel(shape)}`;
+                }
+            }
+            model ??= merge(spec.modelIds);
             if (!model) return `Model ${spec.modelIds[0]} is not in the cache's model archive`;
             try {
                 const drawn = renderer.renderModelInstanceToCanvasWidget(
