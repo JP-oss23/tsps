@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fetchContent, getContentApiBase } from "../../network/serverConnection/contentApi";
+import type { OsrsClient } from "../../game/OsrsClient";
+import { createPreviewRenderer, previewSpec, sequenceFrameCount, type PreviewRenderer } from "./CacheEditorPreview";
 import {
     type CacheDefinition, type CacheField, type CacheKind, type CacheLink, type OverlayRow,
     authoringBase, draftProblems, draftRow, fieldsPath, inspectPath, kindsPath, linksByField,
@@ -15,7 +17,7 @@ import {
  * this project overrides, and the server applies it at load time.
  */
 
-type Tab = "values" | "links" | "used" | "transforms";
+type Tab = "values" | "links" | "used" | "transforms" | "preview";
 
 const styles = {
     page: { position: "fixed", inset: 0, zIndex: 4000, background: "#12141a", color: "#e6e6e6", display: "grid", gridTemplateColumns: "300px 1fr", font: "13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace" } as const,
@@ -34,7 +36,7 @@ const styles = {
     footer: { borderTop: "1px solid #262a33", padding: 8, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" as const },
 };
 
-export function CacheEditor() {
+export function CacheEditor({ client }: { client?: OsrsClient }) {
     const [kinds, setKinds] = useState<CacheKind[]>([]);
     const [kind, setKind] = useState("loc");
     const [text, setText] = useState("");
@@ -45,6 +47,10 @@ export function CacheEditor() {
     const [used, setUsed] = useState<{ count: number; sources: Array<{ kind: string; id: number; name: string | null; field: string }> } | null>(null);
     const [draft, setDraft] = useState<OverlayRow | null>(null);
     const [pickable, setPickable] = useState<CacheField[]>([]);
+    const [previewError, setPreviewError] = useState<string | null>(null);
+    const [frame, setFrame] = useState(0);
+    const canvasRef = useRef<HTMLCanvasElement | null>(null);
+    const rendererRef = useRef<PreviewRenderer | null>(null);
     const [pick, setPick] = useState<{ field: string; text: string; hits: Array<{ kind: string; id: number; name: string | null }> } | null>(null);
     const [status, setStatus] = useState<string>("ready");
     const [error, setError] = useState<string | null>(null);
@@ -150,6 +156,27 @@ export function CacheEditor() {
 
     const grouped = useMemo(() => linksByField(definition?.links), [definition]);
 
+    /** A definition draws as one merged model; a sequence plays if it has frames. */
+    const spec = useMemo(() => definition ? previewSpec(definition, definition.kind, frame) : null, [definition, frame]);
+    const frames = useMemo(() => sequenceFrameCount(client as OsrsClient, spec?.sequenceId), [client, spec?.sequenceId]);
+
+    useEffect(() => {
+        if (tab !== "preview" || !canvasRef.current) return;
+        if (!client) {
+            setPreviewError("No client attached, so the model renderer is unavailable");
+            return;
+        }
+        rendererRef.current ??= createPreviewRenderer(client);
+        setPreviewError(rendererRef.current.draw(canvasRef.current, spec));
+    }, [client, spec, tab]);
+
+    // Animate a sequence while its tab is open, at the frame delay the cache declares.
+    useEffect(() => {
+        if (tab !== "preview" || frames <= 1) return;
+        const timer = window.setInterval(() => setFrame((current) => (current + 1) % frames), 120);
+        return () => window.clearInterval(timer);
+    }, [frames, tab]);
+
     const editLink = (field: string, entry: CacheLink) => {
         if (!draft) return;
         const existing = draft.fields[field];
@@ -202,7 +229,7 @@ export function CacheEditor() {
                 </div>
 
                 <div style={styles.tabs}>
-                    {(["values", "links", "used", "transforms"] as Tab[]).map((entry) => (
+                    {(["values", "preview", "links", "used", "transforms"] as Tab[]).map((entry) => (
                         <div key={entry} style={styles.tab(tab === entry)} onClick={() => { setTab(entry); if (entry === "used") void loadUsedBy(); }}>
                             {entry === "used" ? "used by" : entry}
                         </div>
@@ -211,6 +238,18 @@ export function CacheEditor() {
 
                 <div style={styles.body}>
                     {!definition ? <p style={{ color: "#7f8899" }}>Pick something on the left. Links are clickable: every reference is another entry you can inspect.</p> : null}
+
+                    {definition && tab === "preview" ? (
+                        <div>
+                            {previewError ? <p style={{ color: "#c9b06a" }}>{previewError}</p> : null}
+                            <canvas ref={canvasRef} width={220} height={220} style={{ background: "#0b0d11", border: "1px solid #262a33" }} />
+                            <div style={{ marginTop: 8, color: "#9aa3b2" }}>
+                                {spec
+                                    ? <>models {spec.modelIds.join(", ")}{spec.sequenceId !== undefined ? ` · sequence ${spec.sequenceId}${frames > 1 ? ` (${frames} frames)` : ""}` : ""}</>
+                                    : "Nothing to draw for this kind."}
+                            </div>
+                        </div>
+                    ) : null}
 
                     {definition && tab === "values" && definition.values ? (
                         <table style={styles.table}>

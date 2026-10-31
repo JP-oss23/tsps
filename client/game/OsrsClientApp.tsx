@@ -666,7 +666,7 @@ function OsrsClientApp() {
     if (cacheEditor) {
         return (
             <Suspense fallback={<p style={{ padding: 16 }}>Loading cache editor…</p>}>
-                <CacheEditor />
+                <CacheEditor client={osrsClient} />
             </Suspense>
         );
     }

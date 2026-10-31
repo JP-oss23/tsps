@@ -72,3 +72,26 @@ assert.deepEqual(withPickedId(withPickedId(withPickedId(overlay, listField, 1), 
 assert.deepEqual(withPickedId(withPickedId(overlay, seqField, 3206), seqField, 3207).fields, { seqId: 3207 }, "a scalar pick replaces");
 
 console.log("cache-editor page model ok");
+
+// Preview specs: which models a definition draws, and which sequence plays.
+import { previewModels, previewSpec, sequenceFrameCount } from "../custom/cache-editor/CacheEditorPreview";
+
+const loc = {
+    kind: "loc", id: 1, exists: true, name: "Crate", label: "Loc (object)",
+    values: { models: [15402, 15403], seqId: 3206, zoom2d: 1800, ambient: 25, contrast: 100 },
+};
+assert.deepEqual(previewModels(loc), [15402, 15403], "a loc merges its model groups");
+assert.deepEqual(previewSpec(loc, "loc", 3), {
+    modelIds: [15402, 15403], sequenceId: 3206, sequenceFrame: 3,
+    zoom2d: 1800, ambient: 25, contrast: 100,
+});
+assert.deepEqual(previewModels({ ...loc, kind: "npc", values: { modelIds: [7], idleSeqId: 808 } }), [7], "an npc uses modelIds");
+assert.equal(previewSpec({ ...loc, kind: "npc", values: { modelIds: [7], idleSeqId: 808 } }, "npc").sequenceId, 808, "an npc idles");
+assert.deepEqual(previewModels({ ...loc, kind: "item", values: { model: 5, maleModel: 6, femaleModel: 7 } }), [5, 6, 7], "an item previews its inventory and worn models");
+assert.deepEqual(previewModels({ ...loc, kind: "spotanim", values: { modelId: 9, animationId: 86 } }), [9]);
+assert.equal(previewSpec({ ...loc, kind: "spotanim", values: { modelId: 9, animationId: 86 } }, "spotanim").sequenceId, 86, "a graphic plays its animation");
+assert.equal(previewSpec({ ...loc, kind: "loc", values: { seqId: 1 } }), null, "no models, nothing to draw");
+assert.deepEqual(previewModels({ ...loc, kind: "varbit", values: {} }), [], "a kind with no models previews nothing");
+assert.equal(sequenceFrameCount(undefined as any, 3206), 1, "without a client a sequence is a still");
+
+console.log("cache-editor preview specs ok");
