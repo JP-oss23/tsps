@@ -129,6 +129,12 @@ non-`http:` world.
     archives, so they stay inspectable but cannot be picked by name.
   - `transforms` shows the gating variable, the children, which one is the fallback, and — with a
     player — which child that player currently sees.
+- **Preview:** drawn by the client's own software model renderer (`Model2DRenderer`), so no WebGL
+  context and no game render loop are needed. A definition is *one merged model* — a loc carries its
+  parts grouped, an npc and an item flat — oriented by its own zoom/rotation/offset fields and lit by
+  its ambient/contrast. A sequence plays at 120 ms per frame while the tab is open: a loc's `seqId`,
+  an npc's `idleSeqId`, a graphic's `animationId`. A definition with no models says so, and a model
+  missing from the archive names the id rather than drawing an empty square.
 - **Draft (footer):** the `{ kind, id, baseId, fields }` row as it will be written, with local
   validation (overlay id range, base exists, something overridden) before the server's own audit runs.
   Save reports "restart to apply".
