@@ -4,8 +4,9 @@ import type { OsrsClient } from "../../game/OsrsClient";
 import { createPreviewRenderer, previewSpec, sequenceFrameCount, shapeLabel, type PreviewRenderer } from "./CacheEditorPreview";
 import { LocModelType } from "../../rs/config/loctype/LocModelType";
 import {
+    type AssetKind, type AssetListing, type AssetRow,
     type CacheDefinition, type CacheField, type CacheKind, type CacheLink,
-    authoringBase, draftProblems, fieldsPath, inspectPath, kindsPath, linksByField, withField,
+    assetFor, assetsPath, authoringBase, draftProblems, fieldsPath, inspectPath, kindsPath, labelRef, linksByField,
 } from "./CacheEditorModel";
 
 /**
@@ -66,6 +67,12 @@ function parseValue(field: CacheField | null, raw: string): unknown {
 
 export function CacheEditor({ client }: { client?: OsrsClient }) {
     const [kinds, setKinds] = useState<CacheKind[]>([]);
+    // Two axes: definitions (config archives) and assets (cache indices: models, sprites, textures).
+    const [mode, setMode] = useState<"definitions" | "assets">("definitions");
+    const [assetKind, setAssetKind] = useState<AssetKind>("model");
+    const [assets, setAssets] = useState<AssetListing | null>(null);
+    const [uploadName, setUploadName] = useState("");
+    const fileRef = useRef<HTMLInputElement | null>(null);
     const [kind, setKind] = useState("loc");
     const [text, setText] = useState("");
     const [hits, setHits] = useState<Array<{ kind: string; id: number; name: string | null; custom?: boolean }>>([]);
@@ -170,6 +177,49 @@ export function CacheEditor({ client }: { client?: OsrsClient }) {
         setDefinition(body as CacheDefinition);
         setView({ yaw: 0, pitch: 0, zoom: 1 });
     }, [definition, load]);
+
+    const loadAssets = useCallback(async (forKind: AssetKind = assetKind, offset = 0) => {
+        if (!contentBase) return;
+        const body = await load(assetsPath(forKind, offset));
+        if (body) setAssets(body as AssetListing);
+    }, [assetKind, contentBase, load]);
+
+    /** Upload lives here, with the assets, because an asset is what an upload creates. */
+    const upload = useCallback(async (file: File) => {
+        if (!authoring) { setError("Uploading needs the local authoring service; start the server with CACHE_EDITOR_ENABLED=1"); return; }
+        const data = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result).split(",")[1] ?? "");
+            reader.onerror = () => reject(new Error("Could not read the file"));
+            reader.readAsDataURL(file);
+        });
+        try {
+            const response = await fetch(`${authoring}/assets`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ kind: assetKind, name: uploadName || file.name, data }),
+            });
+            const body = await response.json();
+            if (!response.ok) throw new Error(body?.error ?? `upload failed: ${response.status}`);
+            setStatus(`${body.reused ? "already stored" : "uploaded"} ${body.asset.kind} ${body.asset.id} — ${body.asset.name}`);
+            setUploadName("");
+            await loadAssets();
+            await load(`/api/cache-kinds`).then((kindsBody) => kindsBody?.kinds && setKinds(kindsBody.kinds.filter((entry: CacheKind) => entry.usable !== false)));
+        } catch (failure) {
+            setError(String((failure as Error).message ?? failure));
+        }
+    }, [assetKind, authoring, load, loadAssets, uploadName]);
+
+    const rename = useCallback(async (asset: AssetRow, name: string) => {
+        if (!authoring) { setError("Renaming needs the local authoring service"); return; }
+        const response = await fetch(`${authoring}/assets`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ rename: true, kind: asset.kind, id: asset.id, name }),
+        });
+        if (!response.ok) { setError((await response.json())?.error ?? "rename failed"); return; }
+        await loadAssets();
+    }, [authoring, loadAssets]);
 
     const runSearch = useCallback(async (needle = text, within = kind) => {
         if (!needle.trim()) return;
@@ -324,33 +374,94 @@ export function CacheEditor({ client }: { client?: OsrsClient }) {
         <div style={styles.page}>
             <div style={styles.side}>
                 <div style={styles.bar}>
-                    <button style={{ ...styles.input, color: "#8fd18f" }} onClick={() => void openCreate(shown?.exists && !editing ? shown : null)}>+ New</button>
-                    <select style={{ ...styles.input, flex: 1 }} value={kind} onChange={(event) => { setKind(event.target.value); setHits([]); }}>
-                        {kinds.map((entry) => (
-                            <option key={entry.kind} value={entry.kind}>
-                                {entry.label} {entry.count ? `(${entry.count})` : entry.decoded ? "" : "(names only)"}
-                            </option>
-                        ))}
-                    </select>
+                    <button style={styles.tab(mode === "definitions")} onClick={() => setMode("definitions")}>definitions</button>
+                    <button style={styles.tab(mode === "assets")} onClick={() => { setMode("assets"); void loadAssets(); }}>assets</button>
                 </div>
-                <div style={styles.bar}>
-                    <input
-                        style={{ ...styles.input, flex: 1 }}
-                        placeholder="name or id, e.g. crate"
-                        value={text}
-                        onChange={(event) => setText(event.target.value)}
-                        onKeyDown={(event) => { if (event.key === "Enter") void runSearch(); }}
-                    />
-                    <button style={styles.input} onClick={() => void runSearch()}>Find</button>
-                </div>
-                <div style={styles.list}>
+                {mode === "assets" ? (
+                    <>
+                        <div style={styles.bar}>
+                            <select style={{ ...styles.input, flex: 1 }} value={assetKind} onChange={(event) => { const next = event.target.value as AssetKind; setAssetKind(next); void loadAssets(next); }}>
+                                <option value="model">models (index 7)</option>
+                                <option value="sprite">sprites (index 8)</option>
+                                <option value="texture">textures (index 9)</option>
+                            </select>
+                            {assets ? <span style={{ color: "#7f8899" }}>{assets.total}</span> : null}
+                        </div>
+                        <div style={styles.bar}>
+                            <input
+                                style={{ ...styles.input, flex: 1 }}
+                                placeholder="name for the upload (e.g. my_loc.dat)"
+                                value={uploadName}
+                                onChange={(event) => setUploadName(event.target.value)}
+                            />
+                            <button style={styles.input} onClick={() => fileRef.current?.click()}>upload…</button>
+                            <input
+                                ref={fileRef}
+                                type="file"
+                                style={{ display: "none" }}
+                                onChange={(event) => { const file = event.target.files?.[0]; if (file) void upload(file); event.target.value = ""; }}
+                            />
+                        </div>
+                        <div style={styles.list}>
+                            {(assets?.mine ?? []).map((asset) => (
+                                <div key={`${asset.kind}:${asset.id}`} style={styles.row(false)}>
+                                    <div>
+                                        <span style={{ color: "#8fd18f" }}>mine</span> {asset.kind} {asset.id} <strong>{asset.name}</strong>
+                                    </div>
+                                    <div style={{ color: "#5d6675", fontSize: 11 }}>
+                                        {asset.size} B · {asset.hash.slice(0, 8)}
+                                        <button style={{ ...styles.input, marginLeft: 6, padding: "0 4px" }} onClick={() => {
+                                            const next = window.prompt("Rename asset", asset.name);
+                                            if (next) void rename(asset, next);
+                                        }}>rename</button>
+                                    </div>
+                                </div>
+                            ))}
+                            {(assets?.cache ?? []).map((id) => (
+                                <div key={id} style={styles.row(false)}>
+                                    <span style={{ color: "#7f8899" }}>{assetKind}</span> {id} <span style={{ color: "#3f4653" }}>cache</span>
+                                </div>
+                            ))}
+                            {assets && assets.total > assets.offset + assets.limit ? (
+                                <div style={{ padding: 8 }}>
+                                    <button style={styles.input} onClick={() => void loadAssets(assetKind, assets.offset + assets.limit)}>next {assets.limit}</button>
+                                </div>
+                            ) : null}
+                        </div>
+                    </>
+                ) : null}
+                {mode === "definitions" ? (
+                    <>
+                        <div style={styles.bar}>
+                            <button style={{ ...styles.input, color: "#8fd18f" }} onClick={() => void openCreate(shown?.exists && !editing ? shown : null)}>+ New</button>
+                            <select style={{ ...styles.input, flex: 1 }} value={kind} onChange={(event) => { setKind(event.target.value); setHits([]); }}>
+                                {kinds.map((entry) => (
+                                    <option key={entry.kind} value={entry.kind}>
+                                        {entry.label} {entry.count ? `(${entry.count})` : entry.decoded ? "" : "(names only)"}
+                                    </option>
+                                ))}
+                            </select>
+                        </div>
+                        <div style={styles.bar}>
+                            <input
+                                style={{ ...styles.input, flex: 1 }}
+                                placeholder="name or id, e.g. crate"
+                                value={text}
+                                onChange={(event) => setText(event.target.value)}
+                                onKeyDown={(event) => { if (event.key === "Enter") void runSearch(); }}
+                            />
+                            <button style={styles.input} onClick={() => void runSearch()}>Find</button>
+                        </div>
+                    </>
+                ) : null}
+                {mode === "definitions" ? <div style={styles.list}>
                     {hits.map((hit) => (
                         <div key={`${hit.kind}:${hit.id}`} style={styles.row(shown?.kind === hit.kind && shown?.id === hit.id)} onClick={() => void inspect(hit.kind, hit.id)}>
                             <span style={{ color: "#7f8899" }}>{hit.kind}</span> {hit.id} {hit.name ?? <em style={{ color: "#7f8899" }}>unnamed</em>}
                         </div>
                     ))}
                     {hits.length === 0 ? <div style={{ padding: 8, color: "#7f8899" }}>Search a kind, or press Find with the current kind to list matches.</div> : null}
-                </div>
+                </div> : null}
             </div>
 
             <div style={styles.main}>
@@ -483,7 +594,7 @@ export function CacheEditor({ client }: { client?: OsrsClient }) {
                                                     <a style={{ ...styles.tone(entry.exists), cursor: "pointer" }} onClick={() => void inspect(entry.kind, entry.id)}>
                                                         {entry.kind} {entry.id}
                                                     </a>{" "}
-                                                    <span style={{ color: "#9aa3b2" }}>{entry.name ?? ""}</span>{" "}
+                                                    <span style={{ color: "#9aa3b2" }}>{labelRef(entry.kind, entry.id, entry.name) === `${entry.kind} ${entry.id}` ? "" : entry.name ?? ""}</span>{" "}
                                                     <span style={styles.tone(entry.exists)}>{entry.exists}</span>
                                                     {entry.note ? <div style={{ color: "#6f7788" }}>{entry.note}</div> : null}
                                                 </div>

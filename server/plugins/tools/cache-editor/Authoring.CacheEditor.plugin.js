@@ -7,6 +7,7 @@
 const http = require("node:http");
 const path = require("node:path");
 const Document = require("./Document.CacheEditor.cjs");
+const Assets = require("./Assets.CacheEditor.cjs");
 
 function createAuthoring(core, root) {
   const snapshot = () => Document.snapshot(root);
@@ -41,6 +42,32 @@ function createAuthoring(core, root) {
       return;
     }
     try {
+      const route = request.url.split("?")[0];
+      // Uploads: base64 in JSON, validated by kind (a model must carry its version trailer), stored
+      // content-addressed so the same bytes are one file and one row.
+      if (route === "/assets") {
+        if (request.method === "GET") {
+          response.end(JSON.stringify({ assets: Assets.assetsOf(root), revision: Document.revision(Document.read(root)) }));
+          return;
+        }
+        if (request.method !== "POST" || !request.headers["content-type"]?.startsWith("application/json")) {
+          response.writeHead(405);
+          response.end();
+          return;
+        }
+        let body = "";
+        for await (const chunk of request) {
+          body += chunk;
+          if (Buffer.byteLength(body) > 3 * 1024 * 1024) throw Object.assign(new Error("Upload is too large"), { status: 413 });
+        }
+        const payload = JSON.parse(body);
+        if (payload.rename) {
+          response.end(JSON.stringify(Assets.renameAsset(root, payload)));
+          return;
+        }
+        response.end(JSON.stringify(Assets.addAsset(root, payload)));
+        return;
+      }
       if (request.url !== "/definitions") {
         response.writeHead(404);
         response.end();

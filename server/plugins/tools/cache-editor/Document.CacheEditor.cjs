@@ -29,7 +29,22 @@ function documentPath(root) {
 }
 
 function empty() {
-  return { version: 1, rows: [] };
+  return { version: 1, rows: [], assets: [] };
+}
+
+/** Writes the whole document atomically; the one path every writer uses. */
+function write(root, document) {
+  const file = documentPath(root);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const temp = `${file}.${randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(temp, `${JSON.stringify(document, null, 2)}
+`, { flag: "wx" });
+    fs.renameSync(temp, file);
+  } finally {
+    if (fs.existsSync(temp)) fs.unlinkSync(temp);
+  }
+  return document;
 }
 
 function read(root) {
@@ -39,7 +54,7 @@ function read(root) {
   if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.rows)) {
     throw new Error(`${DOCUMENT} is not { version, rows }`);
   }
-  return parsed;
+  return { ...parsed, assets: Array.isArray(parsed.assets) ? parsed.assets : [] };
 }
 
 function cacheCount(core, kind) {
@@ -165,4 +180,4 @@ function save(core, root, payload) {
   return snapshot(root);
 }
 
-module.exports = { DOCUMENT, OVERLAY_ID_START, documentPath, read, snapshot, check, audit, upsert, save, revision };
+module.exports = { DOCUMENT, OVERLAY_ID_START, documentPath, read, write, snapshot, check, audit, upsert, save, revision };

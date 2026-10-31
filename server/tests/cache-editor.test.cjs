@@ -289,8 +289,9 @@ test("saving writes the document atomically, checks the budget, and refuses stal
 test("the read-only content endpoints serve what the MCP tools serve", () => {
   const endpoints = new Map();
   assert.equal(Catalog.name, "CacheEditorCatalog");
-  Catalog.register({ core, registerContentEndpoint: (name, handler) => endpoints.set(name, handler), onServerStartup: () => {} });
-  assert.deepEqual([...endpoints.keys()].sort(), ["cache-fields", "cache-inspect", "cache-kinds", "cache-search", "cache-used-by"]);
+  const api = { core, registerContentEndpoint: (name, handler) => endpoints.set(name, handler), onServerStartup: () => {}, onPlayerLogin: () => {} };
+  Catalog.register(api);
+  assert.deepEqual([...endpoints.keys()].sort(), ["cache-assets", "cache-fields", "cache-inspect", "cache-kinds", "cache-search", "cache-used-by"]);
 
   const kinds = endpoints.get("cache-kinds")(new URLSearchParams(), []);
   assert.ok(kinds.kinds.some((entry) => entry.kind === "loc" && entry.count > 1000));
@@ -346,7 +347,8 @@ test("an overlay row is applied at load, so an authored loc is a real definition
 
 test("the field table is served so a picker can search a target kind by name", () => {
   const endpoints = new Map();
-  Catalog.register({ core, registerContentEndpoint: (name, handler) => endpoints.set(name, handler), onServerStartup: () => {} });
+  const api = { core, registerContentEndpoint: (name, handler) => endpoints.set(name, handler), onServerStartup: () => {}, onPlayerLogin: () => {} };
+  Catalog.register(api);
   const body = endpoints.get("cache-fields")(new URLSearchParams({ kind: "loc" }), []);
   assert.equal(body.kind, "loc");
   const seq = body.fields.find((field) => field.name === "seqId");
@@ -364,4 +366,59 @@ test("the field table is served so a picker can search a target kind by name", (
   assert.equal(sprite.searchable, false);
   assert.equal(kinds.find((entry) => entry.kind === "seq").searchable, true, "sequences can be filtered by name");
   assert.equal(kinds.find((entry) => entry.kind === "varp").usable, true, "a named kind is usable even without a decoder");
+});
+
+const Assets = require("../plugins/tools/cache-editor/Assets.CacheEditor.cjs");
+
+/** A minimal but real cache model: the V3 trailer the loader looks for. */
+function modelBytes(size = 64) {
+  const bytes = Buffer.alloc(size, 7);
+  bytes[bytes.length - 2] = 0xff; // -1
+  bytes[bytes.length - 1] = 0xfd; // -3, i.e. version 3
+  return bytes;
+}
+
+test("an uploaded model is stored once, named, and given an id above the cache", () => {
+  const root = scratchRoot();
+  const bytes = modelBytes();
+  const first = Assets.addAsset(root, { kind: "model", name: "my_loc", data: bytes.toString("base64") });
+  assert.equal(first.reused, false);
+  assert.equal(first.asset.id, Assets.ASSET_KINDS.model.start, "models start at 1,000,000");
+  assert.equal(first.asset.name, "my_loc");
+  assert.equal(first.asset.size, bytes.length);
+  assert.match(first.asset.file, /^model\/[0-9a-f]{32}\.dat$/);
+  assert.ok(fs.existsSync(path.join(root, "server/data/assets", first.asset.file)));
+
+  // The same bytes again are the same asset, not a second row and not a second file.
+  const again = Assets.addAsset(root, { kind: "model", name: "duplicate", data: bytes.toString("base64") });
+  assert.equal(again.reused, true);
+  assert.equal(again.asset.id, first.asset.id);
+  assert.equal(Assets.assetsOf(root).length, 1);
+
+  // A different mesh gets the next id in the same kind.
+  const second = Assets.addAsset(root, { kind: "model", name: "my_tree", data: modelBytes(80).toString("base64") });
+  assert.equal(second.asset.id, first.asset.id + 1);
+
+  // Kinds have their own ranges, so ids cannot collide across them.
+  const sprite = Assets.addAsset(root, { kind: "sprite", name: "my_icon", data: Buffer.from("png-like").toString("base64") });
+  assert.equal(sprite.asset.id, Assets.ASSET_KINDS.sprite.start);
+
+  assert.deepEqual(Assets.customModels(root).map((row) => row.id), [first.asset.id, second.asset.id], "only models ship as custom models");
+  assert.equal(Assets.assetNames(root).get(`model:${first.asset.id}`), "my_loc");
+
+  const renamed = Assets.renameAsset(root, { kind: "model", id: first.asset.id, name: "my_door" });
+  assert.equal(renamed.asset.name, "my_door");
+});
+
+test("an upload that is not a cache model is refused, with the reason", () => {
+  const root = scratchRoot();
+  assert.throws(() => Assets.addAsset(root, { kind: "nonsense", name: "x", data: "AAAA" }), /Unknown asset kind/);
+  assert.throws(() => Assets.addAsset(root, { kind: "model", name: "x", data: "" }), /Missing file data/);
+  assert.throws(() => Assets.addAsset(root, { kind: "model", name: "x", data: Buffer.from("not a model at all").toString("base64") }), /version trailer/);
+  const huge = Buffer.alloc(Assets.ASSET_KINDS.model.maxBytes + 1, 0);
+  huge[huge.length - 2] = 0xff;
+  huge[huge.length - 1] = 0xfd;
+  assert.throws(() => Assets.addAsset(root, { kind: "model", name: "x", data: huge.toString("base64") }), /cap is/);
+  // Sprites are images, not models: no trailer requirement.
+  assert.ok(Assets.addAsset(root, { kind: "sprite", name: "icon", data: "AAAA" }).asset);
 });

@@ -9,6 +9,12 @@
 
 const { KINDS, CUSTOM_ITEM_RANGE, kindOf, fieldsOf, referenceFields, referencedKinds, readField } = require("./Fields.CacheEditor");
 
+// Uploaded asset names, so a link or a value can read `model 1000000 (my_loc.dat)` instead of a bare
+// id. Set once at startup by the plugin; the inspector never reads the filesystem itself.
+let assetNames = new Map();
+function setAssetNames(names) { assetNames = names; }
+const assetNameOf = (kind, id) => assetNames.get(`${kind}:${id}`) ?? null;
+
 /** Name maps the cache exposes, by kind. Missing entries mean "this server has no reverse map yet". */
 function namesOf(core, kind) {
   const cache = core.CacheDefinitions;
@@ -142,7 +148,7 @@ function describe(core, { kind, id, player = null, skipUnset = true }) {
         field: field.name,
         kind: field.ref,
         id: target,
-        name: nameOf(core, field.ref, target),
+        name: nameOf(core, field.ref, target) ?? assetNameOf(field.ref, target),
         exists: resolveId(core, field.ref, target),
         ...(field.note ? { note: field.note } : {}),
       });
@@ -301,4 +307,4 @@ function fields(kind, { referencesOnly = true } = {}) {
   }));
 }
 
-module.exports = { describe, search, usedBy, kinds, nameOf, resolveId, definitionOf, fields };
+module.exports = { describe, search, usedBy, kinds, nameOf, resolveId, definitionOf, fields, setAssetNames, assetNameOf };

@@ -18,6 +18,22 @@ export type CacheKind = {
 
 export type CacheField = { name: string; type: string; ref?: string; many?: boolean; note?: string };
 
+export type AssetKind = "model" | "sprite" | "texture";
+
+export type AssetRow = { kind: AssetKind; id: number; name: string; file: string; hash: string; size: number };
+
+export type AssetListing = {
+    kind: AssetKind;
+    index: number;
+    total: number;
+    offset: number;
+    limit: number;
+    /** Cache group ids in this index page. */
+    cache: number[];
+    /** Everything uploaded here, with the name a human gave it. */
+    mine: AssetRow[];
+};
+
 export type CacheLink = {
     field: string;
     kind: string;
@@ -57,6 +73,19 @@ const query = (entries: Record<string, string | number | undefined>) => {
 
 export const kindsPath = () => "/api/cache-kinds";
 export const fieldsPath = (kind: string, all = false) => `/api/cache-fields?${query({ kind, all: all ? "1" : undefined })}`;
+export const assetsPath = (kind: AssetKind, offset = 0, limit = 100, q = "") =>
+    `/api/cache-assets?${query({ kind, offset, limit, q })}`;
+
+/** `model 1000000` -> `model 1000000 (my_loc)`, so a reference reads as something recognisable. */
+export function labelRef(kind: string, id: number, name: string | null | undefined): string {
+    const label = name && name !== "null" ? name : null;
+    return label ? `${kind} ${id} (${label})` : `${kind} ${id}`;
+}
+
+/** The uploaded asset behind a reference, when that id is one of ours. */
+export function assetFor(mine: readonly AssetRow[], kind: string, id: number): AssetRow | undefined {
+    return mine.find((asset) => asset.kind === kind && asset.id === id);
+}
 
 /** Kinds the browser may list: a decoder or a name map, never a bare archive with neither. */
 export const usableKinds = (kinds: readonly CacheKind[]) => kinds.filter((entry) => entry.usable !== false);
