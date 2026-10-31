@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { fetchContent, getContentApiBase } from "../../network/serverConnection/contentApi";
 import {
-    type CacheDefinition, type CacheKind, type CacheLink, type OverlayRow,
-    authoringBase, draftProblems, draftRow, inspectPath, kindsPath, linksByField, searchPath, usedByPath, withField,
+    type CacheDefinition, type CacheField, type CacheKind, type CacheLink, type OverlayRow,
+    authoringBase, draftProblems, draftRow, fieldsPath, inspectPath, kindsPath, linksByField,
+    pickableFields, searchPath, usedByPath, usableKinds, withField, withPickedId,
 } from "./CacheEditorModel";
 
 /**
@@ -43,6 +44,8 @@ export function CacheEditor() {
     const [tab, setTab] = useState<Tab>("values");
     const [used, setUsed] = useState<{ count: number; sources: Array<{ kind: string; id: number; name: string | null; field: string }> } | null>(null);
     const [draft, setDraft] = useState<OverlayRow | null>(null);
+    const [pickable, setPickable] = useState<CacheField[]>([]);
+    const [pick, setPick] = useState<{ field: string; text: string; hits: Array<{ kind: string; id: number; name: string | null }> } | null>(null);
     const [status, setStatus] = useState<string>("ready");
     const [error, setError] = useState<string | null>(null);
 
@@ -64,7 +67,7 @@ export function CacheEditor() {
         void (async () => {
             const body = await load(kindsPath());
             if (body?.kinds) {
-                setKinds(body.kinds);
+                setKinds(usableKinds(body.kinds));
                 const first = body.kinds.find((entry: CacheKind) => entry.kind === "loc" && entry.decoded);
                 if (first) setKind(first.kind);
             }
@@ -95,13 +98,27 @@ export function CacheEditor() {
         if (body) setUsed(body);
     }, [definition, load]);
 
-    const startDraft = useCallback(() => {
+    const startDraft = useCallback(async () => {
         if (!definition?.exists) return;
         const overlayStart = Math.max(50000, kinds.find((entry) => entry.kind === definition.kind)?.count ?? 50000);
         setDraft(draftRow(definition, definition.id, overlayStart));
         setTab("links");
         setStatus(`${definition.kind} overlay from base ${definition.id} — pick the links to override, then save`);
-    }, [definition, kinds]);
+        const body = await load(fieldsPath(definition.kind));
+        const fields = pickableFields(body?.fields ?? [], kinds);
+        setPickable(fields);
+        setPick(fields.length ? { field: fields[0].name, text: "", hits: [] } : null);
+        if (!fields.length) setError(`${definition.kind} has no link fields that can be searched by name`);
+    }, [definition, kinds, load]);
+
+    /** Search a link field's target kind by gameval name, so a pick does not need an id. */
+    const runPick = useCallback(async () => {
+        if (!pick) return;
+        const chosen = pickable.find((entry) => entry.name === pick.field);
+        if (!chosen?.ref) return;
+        const body = await load(searchPath(pick.text, chosen.ref, 25));
+        setPick({ ...pick, hits: body?.hits ?? [] });
+    }, [load, pick, pickable]);
 
     const save = useCallback(async () => {
         if (!draft || !definition) return;
@@ -277,6 +294,45 @@ export function CacheEditor() {
                         ) : <p style={{ color: "#7f8899" }}>This definition is not a multi-def.</p>
                     ) : null}
                 </div>
+
+                {draft && pick ? (
+                    <div style={{ ...styles.bar, borderTop: "1px solid #262a33" }}>
+                        <select
+                            style={styles.input}
+                            value={pick.field}
+                            onChange={(event) => setPick({ field: event.target.value, text: "", hits: [] })}
+                        >
+                            {pickable.map((entry) => (
+                                <option key={entry.name} value={entry.name}>
+                                    {entry.name} → {entry.ref}{entry.many ? "[]" : ""}
+                                </option>
+                            ))}
+                        </select>
+                        <input
+                            style={{ ...styles.input, flex: 1, minWidth: 120 }}
+                            placeholder={`filter ${pickable.find((entry) => entry.name === pick.field)?.ref ?? ""} by name`}
+                            value={pick.text}
+                            onChange={(event) => setPick({ ...pick, text: event.target.value })}
+                            onKeyDown={(event) => { if (event.key === "Enter") void runPick(); }}
+                        />
+                        <button style={styles.input} onClick={() => void runPick()}>Find</button>
+                        <span style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                            {pick.hits.slice(0, 8).map((hit) => (
+                                <a
+                                    key={`${hit.kind}:${hit.id}`}
+                                    style={{ cursor: "pointer", color: "#8ab4f8" }}
+                                    onClick={() => {
+                                        const entry = pickable.find((candidate) => candidate.name === pick.field);
+                                        if (entry) setDraft(withPickedId(draft, entry, hit.id));
+                                        setStatus(`${pick.field} → ${hit.kind} ${hit.id}${hit.name ? ` (${hit.name})` : ""}`);
+                                    }}
+                                >
+                                    {hit.name ?? `#${hit.id}`}
+                                </a>
+                            ))}
+                        </span>
+                    </div>
+                ) : null}
 
                 <div style={styles.footer}>
                     <span style={{ color: "#9aa3b2" }}>{status}</span>

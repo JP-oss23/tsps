@@ -49,6 +49,12 @@ function register(api) {
       limit: limitOf(query),
     }),
   }));
+  // The field table a form is generated from: every reference field, with the kind it points at, so
+  // a picker can search that kind by gameval name instead of asking for an id.
+  api.registerContentEndpoint("cache-fields", (query) => ({
+    kind: need(query, "kind"),
+    fields: inspect.fields(need(query, "kind"), { referencesOnly: query.get("all") !== "1" }),
+  }));
   api.registerContentEndpoint("cache-used-by", (query) => inspect.usedBy(core, {
     kind: need(query, "kind"),
     id: number(query, "id"),

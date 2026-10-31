@@ -290,7 +290,7 @@ test("the read-only content endpoints serve what the MCP tools serve", () => {
   const endpoints = new Map();
   assert.equal(Catalog.name, "CacheEditorCatalog");
   Catalog.register({ core, registerContentEndpoint: (name, handler) => endpoints.set(name, handler), onServerStartup: () => {} });
-  assert.deepEqual([...endpoints.keys()].sort(), ["cache-inspect", "cache-kinds", "cache-search", "cache-used-by"]);
+  assert.deepEqual([...endpoints.keys()].sort(), ["cache-fields", "cache-inspect", "cache-kinds", "cache-search", "cache-used-by"]);
 
   const kinds = endpoints.get("cache-kinds")(new URLSearchParams(), []);
   assert.ok(kinds.kinds.some((entry) => entry.kind === "loc" && entry.count > 1000));
@@ -342,4 +342,26 @@ test("an overlay row is applied at load, so an authored loc is a real definition
 
   assert.equal(CacheDefinitions.registerCustomDefinitions([]), 0, "clearing the overlay restores the cache");
   assert.equal(CacheDefinitions.getObject(start).seqId, -1, "and the id is a cache default again");
+});
+
+test("the field table is served so a picker can search a target kind by name", () => {
+  const endpoints = new Map();
+  Catalog.register({ core, registerContentEndpoint: (name, handler) => endpoints.set(name, handler), onServerStartup: () => {} });
+  const body = endpoints.get("cache-fields")(new URLSearchParams({ kind: "loc" }), []);
+  assert.equal(body.kind, "loc");
+  const seq = body.fields.find((field) => field.name === "seqId");
+  assert.deepEqual(seq, { name: "seqId", type: "int", ref: "seq", note: "the loc's animation" });
+  assert.ok(body.fields.every((field) => field.ref), "only reference fields by default");
+  assert.ok(!body.fields.some((field) => field.name === "sizeX"), "plain values are not offered as links");
+  const all = endpoints.get("cache-fields")(new URLSearchParams({ kind: "loc", all: "1" }), []);
+  assert.ok(all.fields.some((field) => field.name === "sizeX"), "?all=1 includes plain fields");
+  assert.throws(() => endpoints.get("cache-fields")(new URLSearchParams({}), []), /Missing \?kind/);
+
+  // The picker must only be offered kinds a search can answer for.
+  const kinds = endpoints.get("cache-kinds")(new URLSearchParams(), []).kinds;
+  const sprite = kinds.find((entry) => entry.kind === "sprite");
+  assert.equal(sprite.usable, false, "a sprite archive has neither decoder nor names");
+  assert.equal(sprite.searchable, false);
+  assert.equal(kinds.find((entry) => entry.kind === "seq").searchable, true, "sequences can be filtered by name");
+  assert.equal(kinds.find((entry) => entry.kind === "varp").usable, true, "a named kind is usable even without a decoder");
 });

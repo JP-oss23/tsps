@@ -3,7 +3,20 @@
  * renderer. Everything here is a path or a plain object: the page does the fetching and drawing.
  */
 
-export type CacheKind = { kind: string; label: string; archive: string; decoded: boolean; count?: number; named?: number };
+export type CacheKind = {
+    kind: string;
+    label: string;
+    archive: string;
+    decoded: boolean;
+    /** A decoder or a name map exists, so the browser can open it. */
+    usable?: boolean;
+    /** A picker may offer this kind: there is a gameval name map to filter by. */
+    searchable?: boolean;
+    count?: number;
+    named?: number;
+};
+
+export type CacheField = { name: string; type: string; ref?: string; many?: boolean; note?: string };
 
 export type CacheLink = {
     field: string;
@@ -43,6 +56,27 @@ const query = (entries: Record<string, string | number | undefined>) => {
 };
 
 export const kindsPath = () => "/api/cache-kinds";
+export const fieldsPath = (kind: string) => `/api/cache-fields?${query({ kind })}`;
+
+/** Kinds the browser may list: a decoder or a name map, never a bare archive with neither. */
+export const usableKinds = (kinds: readonly CacheKind[]) => kinds.filter((entry) => entry.usable !== false);
+
+/**
+ * Reference fields a picker may offer, with the kinds that can be searched by name. A field pointing
+ * at models or sprites stays inspectable but is not offered, because there is nothing to search.
+ */
+export function pickableFields(fields: readonly CacheField[], kinds: readonly CacheKind[]): CacheField[] {
+    const searchable = new Set(kinds.filter((entry) => entry.searchable).map((entry) => entry.kind));
+    return fields.filter((field) => field.ref !== undefined && searchable.has(field.ref));
+}
+
+/** Sets a picked id on a draft: appends for a list field, replaces otherwise. */
+export function withPickedId(row: OverlayRow, field: CacheField, id: number): OverlayRow {
+    if (!field.many) return withField(row, field.name, id);
+    const current = row.fields[field.name];
+    const list = Array.isArray(current) ? current as number[] : [];
+    return withField(row, field.name, list.includes(id) ? list : [...list, id]);
+}
 export const searchPath = (text: string, kind?: string | null, limit = 20) => `/api/cache-search?${query({ text, kind: kind ?? undefined, limit })}`;
 export const inspectPath = (kind: string, id: number) => `/api/cache-inspect?${query({ kind, id })}`;
 export const usedByPath = (kind: string, id: number, limit = 50) => `/api/cache-used-by?${query({ kind, id, limit })}`;

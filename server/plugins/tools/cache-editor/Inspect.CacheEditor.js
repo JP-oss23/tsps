@@ -279,9 +279,26 @@ function kinds(core) {
     label: entry.label,
     archive: entry.archive,
     decoded: entry.decoded !== false,
+    // Something the browser can actually open or search: a decoder, a name map, or both.
+    usable: entry.decoded !== false || !!namesOf(core, kind),
     ...(entry.count ? { count: counts[entry.count] } : {}),
     ...(namesOf(core, kind) ? { named: namesOf(core, kind).size } : {}),
+    // `searchable` says a picker may offer this kind: there is a name map to filter by.
+    searchable: !!namesOf(core, kind),
   }));
 }
 
-module.exports = { describe, search, usedBy, kinds, nameOf, resolveId, definitionOf };
+/** The fields of a kind, with the target kind for each reference, so a picker can offer them. */
+function fields(kind, { referencesOnly = true } = {}) {
+  kindOf(kind);
+  const entries = referencesOnly ? referenceFields(kind) : (fieldsOf(kind) ?? []);
+  return entries.map((entry) => ({
+    name: entry.name,
+    type: entry.type,
+    ...(entry.ref ? { ref: entry.ref } : {}),
+    ...(entry.many ? { many: true } : {}),
+    ...(entry.note ? { note: entry.note } : {}),
+  }));
+}
+
+module.exports = { describe, search, usedBy, kinds, nameOf, resolveId, definitionOf, fields };

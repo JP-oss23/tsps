@@ -123,6 +123,10 @@ non-`http:` world.
     visited trail.
   - `links` is where a draft is built: each target has a **use** button that puts that id into the
     draft's field, so "this loc should use that graphic" is one click, not an id typed from memory.
+  - The draft picker filters a **field's target kind by gameval name**, so a new link never needs an
+    id typed from memory: choose `seqId → seq`, type `quest_mcannon`, click the hit. Only fields
+    whose target kind is searchable are offered — `models`/`mapSceneId` point at model and sprite
+    archives, so they stay inspectable but cannot be picked by name.
   - `transforms` shows the gating variable, the children, which one is the fallback, and — with a
     player — which child that player currently sees.
 - **Draft (footer):** the `{ kind, id, baseId, fields }` row as it will be written, with local
