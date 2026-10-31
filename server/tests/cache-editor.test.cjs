@@ -114,15 +114,16 @@ test("search finds ids by developer name and reports unnamed kinds honestly", ()
   assert.throws(() => Inspect.search(core, { text: "  " }), /Give some text/);
   const kinds = Inspect.kinds(core);
   assert.ok(kinds.find((entry) => entry.kind === "loc").named > 1000);
-  assert.equal(kinds.find((entry) => entry.kind === "seq").decoded, false, "no sequence decoder yet, and it says so");
+  assert.equal(kinds.find((entry) => entry.kind === "seq").decoded, true, "sequences have a decoder now");
+  assert.equal(kinds.find((entry) => entry.kind === "varp").decoded, false, "and a kind without one says so");
 });
 
 test("a kind without a decoder still names the id instead of inventing fields", () => {
-  const described = inspect({ kind: "seq", id: 4001 });
-  assert.equal(described.kind, "seq");
+  const described = inspect({ kind: "varp", id: 29 });
+  assert.equal(described.kind, "varp");
   assert.equal(described.exists, true);
   assert.equal(described.values, undefined);
-  assert.match(described.note, /no seq decoder/i);
+  assert.match(described.note, /no varp decoder/i);
 });
 
 test("used_by answers the reverse question from real definitions", () => {
@@ -146,4 +147,36 @@ test("browsing every loc and npc definition does not throw", () => {
   for (let id = 0; id < Math.min(objects, 400); id++) Inspect.describe(core, { kind: "loc", id });
   for (let id = 0; id < 200; id++) Inspect.describe(core, { kind: "npc", id });
   assert.throws(() => Inspect.describe(core, { kind: "loc", id: -1 }), /non-negative/);
+});
+
+test("a sequence reports its frames and its held items, and does not pretend frames are definitions", () => {
+  const seq = CacheDefinitions.getSeq(3206);
+  assert.ok(seq.frameIds.length > 0, "the cache's crate-shake sequence has frames");
+  const described = inspect({ kind: "seq", id: 3206 });
+  assert.equal(described.name, "quest_mcannon_crate_shake");
+  assert.equal(described.values.maxLoops, seq.maxLoops);
+  const frames = described.links.filter((entry) => entry.field === "frameIds");
+  assert.ok(frames.length > 0, "frames are reported");
+  assert.equal(frames[0].exists, "unverified", "a frame is an archive entry, not a definition");
+  assert.match(frames[0].note, /frame archive/);
+  for (const held of ["leftHandItem", "rightHandItem"]) {
+    const link = described.links.find((entry) => entry.field === held);
+    if (link) assert.equal(link.kind, "item");
+  }
+});
+
+test("a graphic links to its model and its animation, which is the loc-to-animation hop", () => {
+  const spot = CacheDefinitions.getSpotanim(1);
+  assert.ok(spot.modelId > 0);
+  const described = inspect({ kind: "spotanim", id: 1 });
+  assert.equal(described.name, "firebreath_attack");
+  const animation = described.links.find((entry) => entry.field === "animationId");
+  assert.ok(animation, "a graphic names the sequence it plays");
+  assert.equal(animation.kind, "seq");
+  assert.equal(animation.id, spot.animationId);
+  assert.equal(animation.exists, "known");
+  assert.equal(described.links.find((entry) => entry.field === "modelId").exists, "unverified");
+  // The two hops the user asked about: loc -> sequence, graphic -> sequence.
+  const loc = inspect({ kind: "loc", id: 1 });
+  assert.equal(loc.links.find((entry) => entry.field === "seqId").kind, "seq");
 });

@@ -57,16 +57,26 @@ from gamevals, so `endstate` is read by name and survives a cache revision that 
 
 ## What is decoded today
 
-`loc`, `npc`, `item`, `varbit`, `struct`, `enum`, `dbro`, `dbtable`, `idk`. Missing: `seq`,
-`spotanim`, `varp`, `inv`, `bas` — the four that matter for the link graph are the first three, and
-each is a small opcode switch. Until they land, a loc's animation shows as a name and an id, not as
-frames.
+`loc`, `npc`, `item`, `seq`, `spotanim`, `varbit`, `struct`, `enum`, `dbro`, `dbtable`, `idk`.
+Missing: `varp`, `inv`, `bas` — none of which is a link target the inspector needs (a varbit already
+names its varp, and varps are flat).
+
+Sequence and spotanim were the two that mattered, because they are what a loc's animation actually
+resolves to:
+
+```
+loc 1 "Crate"        seqId 3206 → seq quest_mcannon_crate_shake (known, 6 frames)
+graphic 1 firebreath_attack → modelId 17549 (unverified) + animationId 86 → seq (known)
+```
+
+A sequence's frames are **not** definitions — they live in the frame archive — so a frame link
+reports `unverified` and says why, rather than inventing a kind.
 
 ## The authoring half (next)
 
 Order, because each step is what the next one reads:
 
-1. `seq`, `spotanim`, `varp` decoders — the link targets you actually want to look at.
+1. ~~`seq`, `spotanim` decoders~~ — done.
 2. The page at `?cache=1`, lazy-loaded like `?items=1`: browser, inspector tabs, generated form,
    changes tray. Read from the client's loaded cache, write through a loopback authoring endpoint
    with the item editor's guards (revision check, atomic write, origin + loopback check, restart to

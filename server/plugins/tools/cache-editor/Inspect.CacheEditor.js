@@ -39,6 +39,8 @@ function definitionOf(core, kind, id) {
     case "npc": return cache.getNpc(id);
     case "item": return cache.getItem(id);
     case "varbit": return cache.getVarbit(id);
+    case "seq": return cache.getSeq(id);
+    case "spotanim": return cache.getSpotanim(id);
     case "struct": return { params: cache.getStructParams(id) };
     case "enum": return { values: cache.getEnumValues(id) };
     case "dbro": return cache.getDbRow(id);

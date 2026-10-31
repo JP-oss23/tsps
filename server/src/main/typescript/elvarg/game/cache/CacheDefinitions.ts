@@ -1,5 +1,9 @@
 import { ArchiveVarBitTypeLoader } from "./codec/rs/config/vartype/bit/VarBitTypeLoader";
 import { ArchiveIdkTypeLoader } from "./codec/rs/config/idktype/IdkTypeLoader";
+import { ArchiveSequenceTypeLoader } from "./codec/rs/config/seqtype/SequenceTypeLoader";
+import { SequenceType } from "./codec/rs/config/seqtype/SequenceType";
+import { ArchiveSpotAnimTypeLoader } from "./codec/rs/config/spotanimtype/SpotAnimTypeLoader";
+import { SpotAnimType } from "./codec/rs/config/spotanimtype/SpotAnimType";
 import type { IdkType } from "./codec/rs/config/idktype/IdkType";
 import type { VarManager } from "./codec/rs/config/vartype/VarManager";
 import type { Archive } from "./codec/rs/cache/Archive";
@@ -45,6 +49,8 @@ export class CacheDefinitions {
         identKits: ArchiveIdkTypeLoader;
         items: PostProcessedObjTypeLoader;
         objects: ArchivedTypeLoader<LocType>;
+        sequences: ArchiveSequenceTypeLoader;
+        spotAnims: ArchiveSpotAnimTypeLoader;
         objArchives: ArchivedTypeLoader<ObjType>;
         archives: ArchivedDefinitionRegistry;
         archiveContext: ArchivedDefinitionContext;
@@ -95,6 +101,8 @@ export class CacheDefinitions {
             id => archives.getSource("obj", id), () => archives.getCount("obj"));
         this.state = {
             varbits: new ArchiveVarBitTypeLoader(info, configs.getArchive(ConfigType.DAT2.varbits)),
+            sequences: new ArchiveSequenceTypeLoader(info, configs.getArchive(ConfigType.DAT2.seqs)),
+            spotAnims: new ArchiveSpotAnimTypeLoader(info, configs.getArchive(ConfigType.DAT2.spotAnims)),
             identKits: new ArchiveIdkTypeLoader(info, configs.getArchive(ConfigType.DAT2.identkits)),
             npcs: new ArchivedTypeLoader(native.npc, NpcType,
                 id => archives.getSource("npc", id), () => archives.getCount("npc")),
@@ -412,6 +420,14 @@ export class CacheDefinitions {
 
     static getVarbit(id: number) {
         return this.getState().varbits.load(id);
+    }
+
+    static getSeq(id: number): SequenceType {
+        return this.getState().sequences.load(id);
+    }
+
+    static getSpotanim(id: number): SpotAnimType {
+        return this.getState().spotAnims.load(id);
     }
 
     static resolveNpc(id: number, vars: Pick<VarManager, "getVarp" | "getVarbit">): NpcType | undefined {
