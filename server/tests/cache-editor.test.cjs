@@ -289,7 +289,7 @@ test("saving writes the document atomically, checks the budget, and refuses stal
 test("the read-only content endpoints serve what the MCP tools serve", () => {
   const endpoints = new Map();
   assert.equal(Catalog.name, "CacheEditorCatalog");
-  Catalog.register({ core, registerContentEndpoint: (name, handler) => endpoints.set(name, handler) });
+  Catalog.register({ core, registerContentEndpoint: (name, handler) => endpoints.set(name, handler), onServerStartup: () => {} });
   assert.deepEqual([...endpoints.keys()].sort(), ["cache-inspect", "cache-kinds", "cache-search", "cache-used-by"]);
 
   const kinds = endpoints.get("cache-kinds")(new URLSearchParams(), []);
@@ -307,4 +307,39 @@ test("the read-only content endpoints serve what the MCP tools serve", () => {
 
   assert.throws(() => endpoints.get("cache-inspect")(new URLSearchParams({ kind: "loc" }), []), /Missing \?id/);
   assert.throws(() => endpoints.get("cache-inspect")(new URLSearchParams({ kind: "loc", id: "-1" }), []), /non-negative/);
+});
+
+test("an overlay row is applied at load, so an authored loc is a real definition", () => {
+  const { objects } = CacheDefinitions.getCounts();
+  const start = Math.max(Document.OVERLAY_ID_START, objects);
+  const base = (() => {
+    for (let id = 0; id < objects; id++) {
+      const definition = CacheDefinitions.getObject(id);
+      if (definition?.seqId >= 0 && definition.name) return definition;
+    }
+    return null;
+  })();
+  assert.ok(base);
+  // A different, real sequence, so the override is observable rather than a no-op.
+  const otherSeq = base.seqId === 3206 ? 3207 : 3206;
+
+  const applied = CacheDefinitions.registerCustomDefinitions([
+    { kind: "loc", id: start, baseId: base.id, fields: { seqId: otherSeq, name: "Cache editor test loc" } },
+  ]);
+  assert.equal(applied, 1);
+  assert.equal(CacheDefinitions.hasCustomDefinition("loc", start), true);
+  assert.equal(CacheDefinitions.hasDefinition("loc", start), true, "an overlay id exists even though the cache is smaller");
+  assert.equal(CacheDefinitions.getObject(start).seqId, otherSeq, "the override is what the game reads");
+  assert.equal(CacheDefinitions.getObject(start).name, "Cache editor test loc");
+  assert.equal(CacheDefinitions.getObject(base.id).seqId, base.seqId, "the base is untouched");
+  assert.deepEqual(CacheDefinitions.getCustomDefinitions().map((row) => [row.kind, row.id, row.baseId]), [["loc", start, base.id]]);
+
+  // The inspector reports it as an authored id, and resolves its links like any other.
+  const described = inspect({ kind: "loc", id: start });
+  assert.equal(described.exists, true);
+  assert.equal(described.name, "Cache editor test loc");
+  assert.equal(described.links.find((entry) => entry.field === "seqId").id, otherSeq);
+
+  assert.equal(CacheDefinitions.registerCustomDefinitions([]), 0, "clearing the overlay restores the cache");
+  assert.equal(CacheDefinitions.getObject(start).seqId, -1, "and the id is a cache default again");
 });

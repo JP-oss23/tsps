@@ -2,7 +2,9 @@
 // `api.registerContentEndpoint` is public and read-only by design, and everything served here is
 // cache-derived data the browser could read out of its own cache — so nothing player-specific and
 // nothing writable belongs in this file.
+const path = require("node:path");
 const inspect = require("./Inspect.CacheEditor");
+const Document = require("./Document.CacheEditor.cjs");
 
 function need(query, name) {
   const value = query.get(name);
@@ -23,6 +25,17 @@ function limitOf(query) {
 
 function register(api) {
   const { core } = api;
+  // Apply the overlay document once at startup, so an authored row is live on the next boot without
+  // an encoder or a cache repack. Load failures are reported, never silently ignored.
+  api.onServerStartup(() => {
+    try {
+      const document = Document.read(path.resolve(__dirname, "../../../.."));
+      const applied = core.CacheDefinitions.registerCustomDefinitions(document.rows);
+      if (applied) console.log(`[cache-editor] applied ${applied} overlay definition(s)`);
+    } catch (error) {
+      console.error("[cache-editor] overlay document not applied:", error.message);
+    }
+  });
   api.registerContentEndpoint("cache-kinds", () => ({ kinds: inspect.kinds(core) }));
   api.registerContentEndpoint("cache-inspect", (query) => inspect.describe(core, {
     kind: need(query, "kind"),

@@ -98,7 +98,16 @@ allow-list matched to `PORT`, 1 MiB body, atomic temp-file replace, revision con
 clients, and a restart notice after saving. `Catalog.CacheEditor.plugin.js` serves the reads at
 `/api/cache-kinds`, `/api/cache-inspect`, `/api/cache-search` and `/api/cache-used-by`.
 
-Saving writes overlay rows; **applying them to the running world is still the open piece**.
+Saving writes overlay rows, and they are **applied at the next server start**: `Catalog` reads the
+document on startup and registers it with `CacheDefinitions.registerCustomDefinitions`, which clones
+the base definition and overrides the listed fields. That is the whole reason locs and npcs need no
+encoder and no repack — `getObject`/`getNpc`/`getItem` return the overlaid clone, so `ObjectDefinition`,
+`NpcDefinition` and `ItemDefinition` (all of which route through them) see it too, while the base cache
+definition stays untouched.
+
+What is still missing is **placement**: a new loc id exists but nothing spawns it. That is the map
+editor's job (`WorldLocSpawnRow` / `WorldLocChangeRow`), and the next step is linking the two
+workbenches — "place this loc" from here, "inspect its definition" from there.
 
 ## The page
 

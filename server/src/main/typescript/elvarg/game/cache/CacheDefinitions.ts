@@ -57,6 +57,13 @@ export class CacheDefinitions {
         info: CacheInfo;
     };
     private static customItems = new Map<number, ServerCustomItem>();
+    /**
+     * Decoded definition overlays: a base definition from the cache plus the fields this project
+     * overrides. Kept apart from `customItems`, which is the item loader's own JSON pipeline, so a
+     * loc or npc overlay needs no encoder and no cache repack.
+     */
+    private static customDefinitions = new Map<string, { baseId: number; fields: Record<string, unknown> }>();
+    private static customDefinitionCache = new Map<string, unknown>();
     private static customItemTypes = new Map<number, ObjType>();
     private static customModels?: Array<{ id: number; data: string }>;
     private static dbArchive?: Archive;
@@ -121,7 +128,8 @@ export class CacheDefinitions {
     }
 
     static getNpc(id: number): NpcType {
-        return this.getState().npcs.load(id);
+        return this.applyCustomDefinition("npc", id, (baseId) => this.getState().npcs.load(baseId))
+            ?? this.getState().npcs.load(id);
     }
 
     static registerDefinitionArchives(bundles: readonly ArchivedDefinitionBundle[]): Record<ArchivedDefinitionKind, number[]> {
@@ -460,11 +468,11 @@ export class CacheDefinitions {
         const counts = this.getCounts();
         switch (kind) {
             case "loc":
-                return id < counts.objects || state.archives.ids("loc").includes(id);
+                return this.hasCustomDefinition("loc", id) || id < counts.objects || state.archives.ids("loc").includes(id);
             case "npc":
-                return id < counts.npcs || state.archives.ids("npc").includes(id);
+                return this.hasCustomDefinition("npc", id) || id < counts.npcs || state.archives.ids("npc").includes(id);
             case "item":
-                return id < counts.items || this.customItems.has(id) || state.archives.ids("obj").includes(id);
+                return this.hasCustomDefinition("item", id) || id < counts.items || this.customItems.has(id) || state.archives.ids("obj").includes(id);
             case "varbit":
                 return state.varbits.archive.getFile(id) !== undefined;
             case "seq":
@@ -498,7 +506,8 @@ export class CacheDefinitions {
     static getItem(id: number): ObjType {
         const custom = this.customItemTypes.get(id);
         if (custom) return custom;
-        return this.getState().items.load(id);
+        return this.applyCustomDefinition("item", id, (baseId) => this.getState().items.load(baseId))
+            ?? this.getState().items.load(id);
     }
 
     static hasItem(id: number): boolean {
@@ -604,8 +613,50 @@ export class CacheDefinitions {
         return this.customModels ?? [];
     }
 
+    /** Registers overlay rows (`{ kind, id, baseId, fields }`); replaces any previous set. */
+    static registerCustomDefinitions(rows: readonly { kind: string; id: number; baseId: number; fields?: Record<string, unknown> }[]): number {
+        this.customDefinitions = new Map();
+        this.customDefinitionCache = new Map();
+        for (const row of rows) {
+            if (!row || !Number.isInteger(row.id) || !Number.isInteger(row.baseId)) continue;
+            if (!["loc", "npc", "item"].includes(row.kind)) continue;
+            this.customDefinitions.set(`${row.kind}:${row.id}`, { baseId: row.baseId, fields: { ...(row.fields ?? {}) } });
+        }
+        return this.customDefinitions.size;
+    }
+
+    static getCustomDefinitions(): Array<{ kind: string; id: number; baseId: number; fields: Record<string, unknown> }> {
+        return [...this.customDefinitions.entries()].map(([key, row]) => {
+            const [kind, id] = key.split(":");
+            return { kind, id: Number(id), baseId: row.baseId, fields: { ...row.fields } };
+        });
+    }
+
+    /** True when this id is authored here rather than read from the cache. */
+    static hasCustomDefinition(kind: string, id: number): boolean {
+        return this.customDefinitions.has(`${kind}:${id}`);
+    }
+
+    /**
+     * The overlay applied: the base definition cloned with its overridden fields. A shallow clone is
+     * enough because every overridable field is a scalar or a whole array.
+     */
+    private static applyCustomDefinition<T extends object>(kind: string, id: number, loadBase: (baseId: number) => T): T | undefined {
+        const row = this.customDefinitions.get(`${kind}:${id}`);
+        if (!row) return undefined;
+        const key = `${kind}:${id}`;
+        const cached = this.customDefinitionCache.get(key) as T | undefined;
+        if (cached) return cached;
+        const base = loadBase(row.baseId);
+        if (!base) return undefined;
+        const clone = Object.assign(Object.create(Object.getPrototypeOf(base)), base, row.fields) as T;
+        this.customDefinitionCache.set(key, clone);
+        return clone;
+    }
+
     static getObject(id: number): LocType {
-        return this.getState().objects.load(id);
+        return this.applyCustomDefinition("loc", id, (baseId) => this.getState().objects.load(baseId))
+            ?? this.getState().objects.load(id);
     }
 
     static getCounts(): { npcs: number; items: number; objects: number } {
