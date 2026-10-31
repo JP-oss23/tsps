@@ -4,27 +4,36 @@ import type { OsrsClient } from "../../game/OsrsClient";
 import { createPreviewRenderer, previewSpec, sequenceFrameCount, shapeLabel, type PreviewRenderer } from "./CacheEditorPreview";
 import { LocModelType } from "../../rs/config/loctype/LocModelType";
 import {
-    type CacheDefinition, type CacheField, type CacheKind, type CacheLink, type OverlayRow,
-    authoringBase, draftProblems, draftRow, fieldsPath, inspectPath, kindsPath, linksByField,
-    pickableFields, searchPath, usedByPath, usableKinds, withField, withPickedId,
+    type CacheDefinition, type CacheField, type CacheKind, type CacheLink,
+    authoringBase, draftProblems, fieldsPath, inspectPath, kindsPath, linksByField, withField,
 } from "./CacheEditorModel";
 
 /**
- * The cache editor page, opened at `?cache=1`. It reads through the world's content API (the same
- * origin the client already talks to) and writes only through the local authoring service, which is
- * loopback-only and refuses anything but the local client's origin.
+ * The cache editor page, opened at `?cache=1`.
  *
- * Nothing here repacks the cache: an overlay row is a base definition from the cache plus the fields
- * this project overrides, and the server applies it at load time.
+ * Reads go through the world's content API; writes go only to the loopback authoring service.
+ * A cache element can be inspected as it is, or a **new** element can be created from a type and an
+ * optional starting definition, then edited cell by cell and saved as an overlay row.
  */
 
-type Tab = "values" | "links" | "used" | "transforms" | "preview";
+type Tab = "values" | "preview" | "links" | "used" | "transforms";
+
+type Editing = {
+    kind: string;
+    id: number;
+    baseId: number;
+    base: CacheDefinition | null;
+    name: string;
+    /** Only what differs from the base; an empty map means "identical to the base". */
+    overrides: Record<string, unknown>;
+    revision?: string;
+};
 
 const styles = {
     page: { position: "fixed", inset: 0, zIndex: 4000, background: "#12141a", color: "#e6e6e6", display: "grid", gridTemplateColumns: "300px 1fr", font: "13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace" } as const,
     side: { borderRight: "1px solid #262a33", display: "flex", flexDirection: "column", minHeight: 0 } as const,
     main: { display: "flex", flexDirection: "column", minHeight: 0 } as const,
-    bar: { display: "flex", gap: 8, alignItems: "center", padding: 8, borderBottom: "1px solid #262a33" } as const,
+    bar: { display: "flex", gap: 8, alignItems: "center", padding: 8, borderBottom: "1px solid #262a33", flexWrap: "wrap" as const } as const,
     input: { background: "#1b1f27", color: "#e6e6e6", border: "1px solid #303643", padding: "4px 6px", minWidth: 0 } as const,
     list: { overflowY: "auto", flex: 1, minHeight: 0 } as const,
     row: (active: boolean) => ({ padding: "5px 8px", cursor: "pointer", background: active ? "#233047" : "transparent", borderBottom: "1px solid #1c2028" }) as const,
@@ -37,6 +46,24 @@ const styles = {
     footer: { borderTop: "1px solid #262a33", padding: 8, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" as const },
 };
 
+const label = (value: unknown) => (typeof value === "object" && value !== null ? JSON.stringify(value) : String(value));
+
+/** A value from a cell edit, as the field's type expects. */
+function parseValue(field: CacheField | null, raw: string): unknown {
+    const text = raw.trim();
+    if (!field) return text;
+    if (field.type === "boolean") return text === "true";
+    if (field.type === "int[]" || field.type === "number[]") {
+        if (!text) return [];
+        return text.split(",").map((part) => Number(part.trim())).filter((entry) => Number.isFinite(entry));
+    }
+    if (field.type === "int" || field.type === "number") {
+        const parsed = Number(text);
+        return Number.isFinite(parsed) ? Math.trunc(parsed) : raw;
+    }
+    return raw;
+}
+
 export function CacheEditor({ client }: { client?: OsrsClient }) {
     const [kinds, setKinds] = useState<CacheKind[]>([]);
     const [kind, setKind] = useState("loc");
@@ -46,24 +73,26 @@ export function CacheEditor({ client }: { client?: OsrsClient }) {
     const [history, setHistory] = useState<Array<{ kind: string; id: number }>>([]);
     const [tab, setTab] = useState<Tab>("values");
     const [used, setUsed] = useState<{ count: number; sources: Array<{ kind: string; id: number; name: string | null; field: string }> } | null>(null);
-    const [draft, setDraft] = useState<OverlayRow | null>(null);
-    const [pickable, setPickable] = useState<CacheField[]>([]);
-    const [previewError, setPreviewError] = useState<string | null>(null);
-    // The editor page mounts the moment the URL asks for it, which is before the client has finished
-    // loading its cache. Draw only once the loaders exist, then retry until they do.
+    const [status, setStatus] = useState("ready");
+    const [error, setError] = useState<string | null>(null);
+
     const [clientReady, setClientReady] = useState(false);
+    const [previewError, setPreviewError] = useState<string | null>(null);
     const [frame, setFrame] = useState(0);
     const [shape, setShape] = useState<LocModelType>(LocModelType.NORMAL);
     const [rotation, setRotation] = useState(0);
     const [shapes, setShapes] = useState<Array<{ type: LocModelType; label: string }>>([]);
+    const [view, setView] = useState({ yaw: 0, pitch: 0, zoom: 1 });
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const rendererRef = useRef<PreviewRenderer | null>(null);
-    const [pick, setPick] = useState<{ field: string; text: string; hits: Array<{ kind: string; id: number; name: string | null }> } | null>(null);
-    const [status, setStatus] = useState<string>("ready");
-    const [error, setError] = useState<string | null>(null);
+    const dragRef = useRef<{ x: number; y: number; yaw: number; pitch: number } | null>(null);
 
-    // The page can mount before the client has initialised its world URL, and `fetchContent` needs it.
-    // Poll until it exists, then read; otherwise the first failed fetch leaves an empty browser.
+    // New element flow, and the element being edited.
+    const [creating, setCreating] = useState<{ kind: string; name: string; id: number; base: CacheDefinition | null } | null>(null);
+    const [editing, setEditing] = useState<Editing | null>(null);
+    const [editableFields, setEditableFields] = useState<CacheField[]>([]);
+    const [cell, setCell] = useState<{ field: string; text: string } | null>(null);
+
     const [contentBase, setContentBase] = useState<string | undefined>(() => getContentApiBase());
     useEffect(() => {
         if (contentBase) return;
@@ -94,147 +123,208 @@ export function CacheEditor({ client }: { client?: OsrsClient }) {
         void (async () => {
             const body = await load(kindsPath());
             if (body?.kinds) {
-                setKinds(usableKinds(body.kinds));
-                const first = body.kinds.find((entry: CacheKind) => entry.kind === "loc" && entry.decoded);
+                const usable = body.kinds.filter((entry: CacheKind) => entry.usable !== false);
+                setKinds(usable);
+                const first = usable.find((entry: CacheKind) => entry.kind === "loc");
                 if (first) setKind(first.kind);
             }
         })();
     }, [contentBase, load]);
 
+    useEffect(() => {
+        if (clientReady) return;
+        const loadersReady = () => !!client?.modelLoader && !!client?.objTypeLoader
+            && !!client?.npcTypeLoader && !!client?.locTypeLoader;
+        if (loadersReady()) { setClientReady(true); return; }
+        const timer = window.setInterval(() => {
+            if (!loadersReady()) return;
+            window.clearInterval(timer);
+            setClientReady(true);
+        }, 400);
+        return () => window.clearInterval(timer);
+    }, [client, clientReady]);
+
+    /** The element on screen: a cache definition, or the one being edited with its overrides applied. */
+    const shown = useMemo<CacheDefinition | null>(() => {
+        if (!editing) return definition;
+        return {
+            kind: editing.kind,
+            id: editing.id,
+            exists: true,
+            name: editing.name || editing.base?.name || null,
+            label: editing.base?.label ?? editing.kind,
+            values: { ...(editing.base?.values ?? {}), ...editing.overrides },
+            links: editing.base?.links,
+            transforms: editing.base?.transforms,
+        };
+    }, [definition, editing]);
+
     const inspect = useCallback(async (nextKind: string, id: number, push = true) => {
         setError(null);
         setUsed(null);
         setTab("values");
+        setEditing(null);
         const body = await load(inspectPath(nextKind, id));
         if (!body) return;
         if (push && definition) setHistory((entries) => [...entries, { kind: definition.kind, id: definition.id }].slice(-20));
         setDefinition(body as CacheDefinition);
-        setDraft(null);
+        setView({ yaw: 0, pitch: 0, zoom: 1 });
     }, [definition, load]);
 
     const runSearch = useCallback(async (needle = text, within = kind) => {
         if (!needle.trim()) return;
-        if (!contentBase) {
-            setError("Waiting for the client to connect before searching");
-            return;
-        }
+        if (!contentBase) { setError("Waiting for the client to connect before searching"); return; }
         setError(null);
-        const body = await load(searchPath(needle, within));
+        const body = await load(`/api/cache-search?${new URLSearchParams({ text: needle, kind: within, limit: "20" })}`);
         if (body?.hits) setHits(body.hits);
     }, [contentBase, kind, load, text]);
 
     const loadUsedBy = useCallback(async () => {
-        if (!definition) return;
-        const body = await load(usedByPath(definition.kind, definition.id));
+        if (!shown) return;
+        const body = await load(`/api/cache-used-by?${new URLSearchParams({ kind: shown.kind, id: String(shown.id) })}`);
         if (body) setUsed(body);
-    }, [definition, load]);
+    }, [load, shown]);
 
-    const startDraft = useCallback(async () => {
-        if (!definition?.exists) return;
-        const overlayStart = Math.max(50000, kinds.find((entry) => entry.kind === definition.kind)?.count ?? 50000);
-        setDraft(draftRow(definition, definition.id, overlayStart));
-        setTab("links");
-        setStatus(`${definition.kind} overlay from base ${definition.id} — pick the links to override, then save`);
-        const body = await load(fieldsPath(definition.kind));
-        const fields = pickableFields(body?.fields ?? [], kinds);
-        setPickable(fields);
-        setPick(fields.length ? { field: fields[0].name, text: "", hits: [] } : null);
-        if (!fields.length) setError(`${definition.kind} has no link fields that can be searched by name`);
-    }, [definition, kinds, load]);
+    /** Next free overlay id for a kind, read from the authoring document when it is reachable. */
+    const nextId = useCallback(async (forKind: string) => {
+        const total = kinds.find((entry) => entry.kind === forKind)?.count ?? 0;
+        let next = Math.max(50000, total);
+        if (!authoring) return next;
+        try {
+            const document = await fetch(`${authoring}/definitions`).then((response) => response.json());
+            for (const row of document?.rows ?? []) {
+                if (row.kind === forKind && Number.isInteger(row.id)) next = Math.max(next, row.id + 1);
+            }
+        } catch {
+            // No authoring service: the id is still unique against the cache.
+        }
+        return next;
+    }, [authoring, kinds]);
 
-    /** Search a link field's target kind by gameval name, so a pick does not need an id. */
-    const runPick = useCallback(async () => {
-        if (!pick) return;
-        const chosen = pickable.find((entry) => entry.name === pick.field);
-        if (!chosen?.ref) return;
-        const body = await load(searchPath(pick.text, chosen.ref, 25));
-        setPick({ ...pick, hits: body?.hits ?? [] });
-    }, [load, pick, pickable]);
+    const openCreate = useCallback(async (withBase: CacheDefinition | null) => {
+        const forKind = withBase?.kind ?? kind;
+        setError(null);
+        setCreating({ kind: forKind, name: withBase ? `${withBase.name ?? "element"} (copy)` : "", id: await nextId(forKind), base: withBase });
+    }, [kind, nextId]);
+
+    const create = useCallback(async () => {
+        if (!creating) return;
+        if (!Number.isInteger(creating.id) || creating.id < 0) { setError("Give a numeric id"); return; }
+        const fields = await load(fieldsPath(creating.kind, true));
+        setEditableFields((fields?.fields ?? []) as CacheField[]);
+        setEditing({
+            kind: creating.kind,
+            id: creating.id,
+            baseId: creating.base?.id ?? -1,
+            base: creating.base,
+            name: creating.name,
+            overrides: {},
+        });
+        setDefinition(null);
+        setCreating(null);
+        setTab("values");
+        setStatus(`editing new ${creating.kind} ${creating.id}${creating.base ? ` based on ${creating.base.id}` : ""}`);
+    }, [creating, load]);
+
+    const setValue = useCallback((field: string, value: unknown) => {
+        setEditing((current) => {
+            if (!current) return current;
+            const overrides = { ...current.overrides };
+            if (value === undefined || value === "") delete overrides[field];
+            else overrides[field] = value;
+            return { ...current, overrides };
+        });
+    }, []);
 
     const save = useCallback(async () => {
-        if (!draft || !definition) return;
-        const overlayStart = Math.max(50000, kinds.find((entry) => entry.kind === draft.kind)?.count ?? 50000);
-        const problems = draftProblems(draft, definition, overlayStart);
-        if (problems.length) {
-            setError(problems.join("; "));
-            return;
-        }
-        if (!authoring) {
-            setError("Saving needs the local authoring service; start the server with CACHE_EDITOR_ENABLED=1");
-            return;
-        }
+        if (!editing) return;
+        if (!authoring) { setError("Saving needs the local authoring service; start the server with CACHE_EDITOR_ENABLED=1"); return; }
+        const row = { kind: editing.kind, id: editing.id, baseId: editing.baseId >= 0 ? editing.baseId : 0, fields: editing.overrides };
+        if (editing.baseId < 0) { setError("Pick a starting definition; an overlay row needs one to override"); return; }
+        const problems = draftProblems(row, editing.base ?? { kind: editing.kind, id: editing.id, exists: true, name: "", label: "" }, 0);
+        if (problems.length) { setError(problems.join("; ")); return; }
         try {
             const current = await fetch(`${authoring}/definitions`).then((response) => response.json());
             const response = await fetch(`${authoring}/definitions`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ row: draft, revision: current?.revision }),
+                body: JSON.stringify({ row, revision: current?.revision }),
             });
             const body = await response.json();
             if (!response.ok) throw new Error(body?.error ?? `save failed: ${response.status}`);
-            setStatus(`saved ${draft.kind} ${draft.id} — restart the server to apply it`);
+            setEditing({ ...editing, revision: body?.revision });
+            setStatus(`saved ${row.kind} ${row.id} — restart the server to apply it`);
             setError(null);
         } catch (failure) {
             setError(String((failure as Error).message ?? failure));
         }
-    }, [authoring, definition, draft, kinds]);
+    }, [authoring, editing]);
 
-    const grouped = useMemo(() => linksByField(definition?.links), [definition]);
-
-    useEffect(() => {
-        if (clientReady) return;
-        const ready = !!client?.modelLoader && !!client?.objTypeLoader && !!client?.npcTypeLoader && !!client?.locTypeLoader;
-        if (ready) setClientReady(true);
-        else {
-            const timer = window.setTimeout(() => setClientReady(false), 500);
-            return () => window.clearTimeout(timer);
-        }
-    }, [client, clientReady]);
-
-    /** A definition draws as one merged model; a sequence plays if it has frames. */
-    const spec = useMemo(() => definition ? previewSpec(definition, definition.kind, frame) : null, [definition, frame]);
+    const grouped = useMemo(() => linksByField(shown?.links), [shown]);
+    const spec = useMemo(() => shown ? previewSpec(shown, shown.kind, frame) : null, [shown, frame]);
     const frames = useMemo(() => sequenceFrameCount(client as OsrsClient, spec?.sequenceId), [client, spec?.sequenceId]);
 
     useEffect(() => {
         if (tab !== "preview" || !canvasRef.current) return;
-        if (!client) {
-            setPreviewError("No client attached, so the model renderer is unavailable");
-            return;
-        }
-        if (!clientReady) {
-            setPreviewError("Waiting for the cache to load…");
-            return;
-        }
+        if (!client) { setPreviewError("No client attached, so the model renderer is unavailable"); return; }
+        if (!clientReady) { setPreviewError("Waiting for the cache to load…"); return; }
         rendererRef.current ??= createPreviewRenderer(client);
-        if (definition?.kind === "loc") {
-            const available = rendererRef.current.locShapes(definition.id);
+        if (shown?.kind === "loc") {
+            const available = rendererRef.current.locShapes(shown.id);
             setShapes(available);
             if (available.length && !available.some((entry) => entry.type === shape)) setShape(available[0].type);
         } else setShapes([]);
         setPreviewError(rendererRef.current.draw(canvasRef.current, {
-            kind: definition?.kind ?? "", id: definition?.id ?? 0, spec, shape, rotation,
+            kind: shown?.kind ?? "", id: shown?.id ?? 0, spec, shape, rotation,
+            yaw: view.yaw, pitch: view.pitch, zoom: view.zoom,
         }));
-    }, [client, clientReady, definition?.id, definition?.kind, rotation, shape, spec, tab]);
+    }, [client, clientReady, rotation, shape, shown, spec, tab, view]);
 
-    // Animate a sequence while its tab is open, at the frame delay the cache declares.
     useEffect(() => {
         if (tab !== "preview" || frames <= 1) return;
         const timer = window.setInterval(() => setFrame((current) => (current + 1) % frames), 120);
         return () => window.clearInterval(timer);
     }, [frames, tab]);
 
-    const editLink = (field: string, entry: CacheLink) => {
-        if (!draft) return;
-        const existing = draft.fields[field];
-        const next = Array.isArray(existing) ? [...(existing as number[]), entry.id] : entry.id;
-        setDraft(withField(draft, field, next));
-        setStatus(`${field} → ${entry.kind} ${entry.id}${entry.name ? ` (${entry.name})` : ""}`);
+    /** One editable row of the values table. */
+    const renderValueCell = (field: CacheField) => {
+        if (!editing) return label(shown?.values?.[field.name] ?? "");
+        const value = editing.overrides[field.name] ?? editing.base?.values?.[field.name];
+        const changed = field.name in editing.overrides;
+        if (cell?.field === field.name) {
+            return (
+                <span style={{ display: "flex", gap: 4 }}>
+                    <input
+                        autoFocus
+                        style={{ ...styles.input, flex: 1 }}
+                        value={cell.text}
+                        onChange={(event) => setCell({ field: field.name, text: event.target.value })}
+                        onKeyDown={(event) => {
+                            if (event.key === "Escape") setCell(null);
+                            if (event.key === "Enter") { setValue(field.name, parseValue(field, cell.text)); setCell(null); }
+                        }}
+                    />
+                    <button style={styles.input} onClick={() => { setValue(field.name, parseValue(field, cell.text)); setCell(null); }}>ok</button>
+                    <button style={styles.input} onClick={() => setCell(null)}>×</button>
+                </span>
+            );
+        }
+        return (
+            <span
+                style={{ cursor: "text", borderBottom: "1px dotted #3a4150", color: changed ? "#8fd18f" : undefined }}
+                title={field.note ?? `click to edit ${field.name}`}
+                onClick={() => setCell({ field: field.name, text: value === undefined ? "" : Array.isArray(value) ? value.join(", ") : String(value) })}
+            >
+                {value === undefined ? <em style={{ color: "#5d6675" }}>unset</em> : label(value)}
+            </span>
+        );
     };
 
     return (
         <div style={styles.page}>
             <div style={styles.side}>
                 <div style={styles.bar}>
+                    <button style={{ ...styles.input, color: "#8fd18f" }} onClick={() => void openCreate(shown?.exists && !editing ? shown : null)}>+ New</button>
                     <select style={{ ...styles.input, flex: 1 }} value={kind} onChange={(event) => { setKind(event.target.value); setHits([]); }}>
                         {kinds.map((entry) => (
                             <option key={entry.kind} value={entry.kind}>
@@ -255,9 +345,8 @@ export function CacheEditor({ client }: { client?: OsrsClient }) {
                 </div>
                 <div style={styles.list}>
                     {hits.map((hit) => (
-                        <div key={`${hit.kind}:${hit.id}`} style={styles.row(definition?.kind === hit.kind && definition?.id === hit.id)} onClick={() => void inspect(hit.kind, hit.id)}>
+                        <div key={`${hit.kind}:${hit.id}`} style={styles.row(shown?.kind === hit.kind && shown?.id === hit.id)} onClick={() => void inspect(hit.kind, hit.id)}>
                             <span style={{ color: "#7f8899" }}>{hit.kind}</span> {hit.id} {hit.name ?? <em style={{ color: "#7f8899" }}>unnamed</em>}
-                            {hit.custom ? <span style={{ color: "#c9b06a" }}> custom</span> : null}
                         </div>
                     ))}
                     {hits.length === 0 ? <div style={{ padding: 8, color: "#7f8899" }}>Search a kind, or press Find with the current kind to list matches.</div> : null}
@@ -267,14 +356,42 @@ export function CacheEditor({ client }: { client?: OsrsClient }) {
             <div style={styles.main}>
                 <div style={styles.bar}>
                     <button style={styles.input} onClick={() => { const previous = history.at(-1); if (previous) { setHistory((entries) => entries.slice(0, -1)); void inspect(previous.kind, previous.id, false); } }}>←</button>
-                    <strong>{definition ? `${definition.kind} ${definition.id}` : "nothing selected"}</strong>
-                    <span style={{ color: "#9aa3b2" }}>{definition?.name ?? (definition ? "unnamed" : "")}</span>
-                    {definition && !definition.exists ? <span style={{ color: "#e08a8a" }}>{definition.note}</span> : null}
+                    <strong>{shown ? `${shown.kind} ${shown.id}` : "nothing selected"}</strong>
+                    <span style={{ color: "#9aa3b2" }}>{shown?.name ?? (shown ? "unnamed" : "")}</span>
+                    {editing ? <span style={{ color: "#8fd18f" }}>{editing.baseId >= 0 ? `new, based on ${editing.baseId}` : "new"}</span> : null}
                     {!contentBase ? <span style={{ color: "#c9b06a" }}>waiting for the client to connect…</span> : null}
                     {error ? <span style={{ color: "#e08a8a" }}>{error}</span> : null}
-                    <span style={{ flex: 1 }} />
-                    {definition?.exists ? <button style={styles.input} onClick={startDraft}>Override as new {definition.kind}</button> : null}
                 </div>
+
+                {creating ? (
+                    <div style={{ ...styles.body, flex: "none" }}>
+                        <div style={{ display: "grid", gap: 8, gridTemplateColumns: "140px 1fr", alignItems: "center", maxWidth: 620 }}>
+                            <span>type</span>
+                            <select style={styles.input} value={creating.kind} onChange={(event) => {
+                                const nextKind = event.target.value;
+                                setCreating({ ...creating, kind: nextKind, base: null });
+                            }}>
+                                {kinds.filter((entry) => entry.decoded).map((entry) => <option key={entry.kind} value={entry.kind}>{entry.label}</option>)}
+                            </select>
+                            <span>starts from</span>
+                            <span style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                                <span style={{ color: creating.base ? "#8fd18f" : "#7f8899" }}>
+                                    {creating.base ? `${creating.base.kind} ${creating.base.id} ${creating.base.name ?? ""}` : "nothing (blank)"}
+                                </span>
+                                {creating.base ? <button style={styles.input} onClick={() => setCreating({ ...creating, base: null })}>clear</button> : null}
+                                <span style={{ color: "#5d6675" }}>choose one in the browser, then press + New again</span>
+                            </span>
+                            <span>name</span>
+                            <input style={styles.input} value={creating.name} placeholder="e.g. Custom trapdoor" onChange={(event) => setCreating({ ...creating, name: event.target.value })} />
+                            <span>id</span>
+                            <input style={styles.input} value={creating.id} onChange={(event) => setCreating({ ...creating, id: Number(event.target.value) })} />
+                        </div>
+                        <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
+                            <button style={styles.input} onClick={() => void create()}>Create</button>
+                            <button style={styles.input} onClick={() => setCreating(null)}>Cancel</button>
+                        </div>
+                    </div>
+                ) : null}
 
                 <div style={styles.tabs}>
                     {(["values", "preview", "links", "used", "transforms"] as Tab[]).map((entry) => (
@@ -285,13 +402,55 @@ export function CacheEditor({ client }: { client?: OsrsClient }) {
                 </div>
 
                 <div style={styles.body}>
-                    {!definition ? <p style={{ color: "#7f8899" }}>Pick something on the left. Links are clickable: every reference is another entry you can inspect.</p> : null}
+                    {!shown && !creating ? <p style={{ color: "#7f8899" }}>Pick something on the left, or press + New. Links are clickable: every reference is another entry.</p> : null}
 
-                    {definition && tab === "preview" ? (
+                    {shown && tab === "values" ? (
+                        <table style={styles.table}>
+                            <tbody>
+                                {(editing ? editableFields : Object.keys(shown.values ?? {}).map((name) => ({ name, type: "" } as CacheField))).map((field) => (
+                                    <tr key={field.name}>
+                                        <td style={{ ...styles.cell, color: "#9aa3b2", width: 220 }}>
+                                            {field.name}
+                                            {field.ref ? <span style={{ color: "#5d6675" }}> → {field.ref}</span> : null}
+                                        </td>
+                                        <td style={styles.cell}>
+                                            {editing ? renderValueCell(field) : label(shown.values?.[field.name] ?? "")}
+                                            {field.note ? <div style={{ color: "#5d6675" }}>{field.note}</div> : null}
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    ) : null}
+
+                    {shown && tab === "preview" ? (
                         <div>
                             {previewError ? <p style={{ color: "#c9b06a" }}>{previewError}</p> : null}
-                            <canvas ref={canvasRef} width={220} height={220} style={{ background: "#0b0d11", border: "1px solid #262a33" }} />
-                            {definition.kind === "loc" && shapes.length > 0 ? (
+                            <canvas
+                                ref={canvasRef}
+                                width={320}
+                                height={320}
+                                style={{ width: 320, height: 320, background: "#0b0d11", border: "1px solid #262a33", cursor: "grab", touchAction: "none" }}
+                                onPointerDown={(event) => { dragRef.current = { x: event.clientX, y: event.clientY, yaw: view.yaw, pitch: view.pitch }; event.currentTarget.setPointerCapture(event.pointerId); }}
+                                onPointerMove={(event) => {
+                                    const drag = dragRef.current;
+                                    if (!drag) return;
+                                    setView((current) => ({
+                                        ...current,
+                                        yaw: drag.yaw + (event.clientX - drag.x) * 0.6,
+                                        pitch: Math.max(-80, Math.min(80, drag.pitch + (event.clientY - drag.y) * 0.6)),
+                                    }));
+                                }}
+                                onPointerUp={(event) => { dragRef.current = null; event.currentTarget.releasePointerCapture?.(event.pointerId); }}
+                                onPointerCancel={() => { dragRef.current = null; }}
+                                onWheel={(event) => {
+                                    event.preventDefault();
+                                    const factor = event.deltaY > 0 ? 0.9 : 1.1;
+                                    setView((current) => ({ ...current, zoom: Math.max(0.25, Math.min(6, current.zoom * factor)) }));
+                                }}
+                                onDoubleClick={() => setView({ yaw: 0, pitch: 0, zoom: 1 })}
+                            />
+                            {shown.kind === "loc" && shapes.length > 0 ? (
                                 <div style={{ marginTop: 6, display: "flex", gap: 6, alignItems: "center" }}>
                                     <select style={styles.input} value={shape} onChange={(event) => setShape(Number(event.target.value) as LocModelType)}>
                                         {shapes.map((entry) => <option key={entry.type} value={entry.type}>{entry.label}</option>)}
@@ -301,53 +460,43 @@ export function CacheEditor({ client }: { client?: OsrsClient }) {
                                     <span style={{ color: "#7f8899" }}>{rotation * 90}°</span>
                                 </div>
                             ) : null}
+                            <div style={{ marginTop: 6, display: "flex", gap: 8, alignItems: "center", color: "#7f8899" }}>
+                                <span>drag to orbit · wheel to zoom · double-click to reset</span>
+                                <button style={styles.input} onClick={() => setView({ yaw: 0, pitch: 0, zoom: 1 })}>reset view</button>
+                                <span>{Math.round(view.yaw)}° / {Math.round(view.pitch)}° · {view.zoom.toFixed(2)}×</span>
+                            </div>
                             <div style={{ marginTop: 8, color: "#9aa3b2" }}>
-                                {spec
-                                    ? <>models {spec.modelIds.join(", ")}{spec.sequenceId !== undefined ? ` · sequence ${spec.sequenceId}${frames > 1 ? ` (${frames} frames)` : ""}` : ""}</>
-                                    : "Nothing to draw for this kind."}
+                                {spec ? <>models {spec.modelIds.join(", ")}{spec.sequenceId !== undefined ? ` · sequence ${spec.sequenceId}${frames > 1 ? ` (${frames} frames)` : ""}` : ""}</> : "Nothing to draw for this kind."}
                             </div>
                         </div>
                     ) : null}
 
-                    {definition && tab === "values" && definition.values ? (
-                        <table style={styles.table}>
-                            <tbody>
-                                {Object.entries(definition.values).map(([field, value]) => (
-                                    <tr key={field}>
-                                        <td style={{ ...styles.cell, color: "#9aa3b2", width: 220 }}>{field}</td>
-                                        <td style={styles.cell}>{typeof value === "object" ? <code>{JSON.stringify(value)}</code> : String(value)}</td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    ) : null}
-
-                    {definition && tab === "links" ? (
+                    {shown && tab === "links" ? (
                         <table style={styles.table}>
                             <tbody>
                                 {grouped.map((group) => (
                                     <tr key={group.field}>
                                         <td style={{ ...styles.cell, color: "#9aa3b2", width: 220 }}>{group.field}</td>
                                         <td style={styles.cell}>
-                                            {group.entries.map((entry) => (
+                                            {group.entries.map((entry: CacheLink) => (
                                                 <div key={`${entry.kind}:${entry.id}`}>
                                                     <a style={{ ...styles.tone(entry.exists), cursor: "pointer" }} onClick={() => void inspect(entry.kind, entry.id)}>
                                                         {entry.kind} {entry.id}
                                                     </a>{" "}
                                                     <span style={{ color: "#9aa3b2" }}>{entry.name ?? ""}</span>{" "}
                                                     <span style={styles.tone(entry.exists)}>{entry.exists}</span>
-                                                    {draft ? <button style={{ ...styles.input, marginLeft: 6 }} onClick={() => editLink(group.field, entry)}>use</button> : null}
                                                     {entry.note ? <div style={{ color: "#6f7788" }}>{entry.note}</div> : null}
                                                 </div>
                                             ))}
                                         </td>
                                     </tr>
                                 ))}
+                                {grouped.length === 0 ? <tr><td style={styles.cell} colSpan={2}>No references.</td></tr> : null}
                             </tbody>
                         </table>
                     ) : null}
 
-                    {definition && tab === "used" ? (
+                    {shown && tab === "used" ? (
                         used ? (
                             <div>
                                 <p style={{ color: "#9aa3b2" }}>{used.count} references</p>
@@ -360,25 +509,25 @@ export function CacheEditor({ client }: { client?: OsrsClient }) {
                         ) : <p style={{ color: "#7f8899" }}>Reading the reverse index…</p>
                     ) : null}
 
-                    {definition && tab === "transforms" ? (
-                        definition.transforms ? (
+                    {shown && tab === "transforms" ? (
+                        shown.transforms ? (
                             <div>
-                                <p>{definition.transforms.note}</p>
-                                {definition.transforms.gatedBy ? (
+                                <p>{shown.transforms.note}</p>
+                                {shown.transforms.gatedBy ? (
                                     <p>
                                         gated by{" "}
-                                        <a style={{ cursor: "pointer", color: "#8ab4f8" }} onClick={() => void inspect(definition.transforms!.gatedBy!.kind, definition.transforms!.gatedBy!.id)}>
-                                            {definition.transforms.gatedBy.kind} {definition.transforms.gatedBy.id}
+                                        <a style={{ cursor: "pointer", color: "#8ab4f8" }} onClick={() => void inspect(shown.transforms!.gatedBy!.kind, shown.transforms!.gatedBy!.id)}>
+                                            {shown.transforms.gatedBy.kind} {shown.transforms.gatedBy.id}
                                         </a>{" "}
-                                        {definition.transforms.gatedBy.name ?? ""}
+                                        {shown.transforms.gatedBy.name ?? ""}
                                     </p>
                                 ) : null}
                                 <table style={styles.table}>
                                     <tbody>
-                                        {definition.transforms.children.map((child) => (
+                                        {shown.transforms.children.map((child) => (
                                             <tr key={child.id}>
                                                 <td style={styles.cell}>
-                                                    <a style={{ cursor: "pointer", color: "#8ab4f8" }} onClick={() => void inspect(definition.kind, child.id)}>{child.id}</a>
+                                                    <a style={{ cursor: "pointer", color: "#8ab4f8" }} onClick={() => void inspect(shown.kind, child.id)}>{child.id}</a>
                                                 </td>
                                                 <td style={styles.cell}>{child.name ?? ""}</td>
                                                 <td style={styles.cell}>{child.fallback ? "fallback" : ""}</td>
@@ -392,55 +541,19 @@ export function CacheEditor({ client }: { client?: OsrsClient }) {
                     ) : null}
                 </div>
 
-                {draft && pick ? (
-                    <div style={{ ...styles.bar, borderTop: "1px solid #262a33" }}>
-                        <select
-                            style={styles.input}
-                            value={pick.field}
-                            onChange={(event) => setPick({ field: event.target.value, text: "", hits: [] })}
-                        >
-                            {pickable.map((entry) => (
-                                <option key={entry.name} value={entry.name}>
-                                    {entry.name} → {entry.ref}{entry.many ? "[]" : ""}
-                                </option>
-                            ))}
-                        </select>
-                        <input
-                            style={{ ...styles.input, flex: 1, minWidth: 120 }}
-                            placeholder={`filter ${pickable.find((entry) => entry.name === pick.field)?.ref ?? ""} by name`}
-                            value={pick.text}
-                            onChange={(event) => setPick({ ...pick, text: event.target.value })}
-                            onKeyDown={(event) => { if (event.key === "Enter") void runPick(); }}
-                        />
-                        <button style={styles.input} onClick={() => void runPick()}>Find</button>
-                        <span style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                            {pick.hits.slice(0, 8).map((hit) => (
-                                <a
-                                    key={`${hit.kind}:${hit.id}`}
-                                    style={{ cursor: "pointer", color: "#8ab4f8" }}
-                                    onClick={() => {
-                                        const entry = pickable.find((candidate) => candidate.name === pick.field);
-                                        if (entry) setDraft(withPickedId(draft, entry, hit.id));
-                                        setStatus(`${pick.field} → ${hit.kind} ${hit.id}${hit.name ? ` (${hit.name})` : ""}`);
-                                    }}
-                                >
-                                    {hit.name ?? `#${hit.id}`}
-                                </a>
-                            ))}
-                        </span>
-                    </div>
-                ) : null}
-
                 <div style={styles.footer}>
                     <span style={{ color: "#9aa3b2" }}>{status}</span>
-                    {error ? <span style={{ color: "#e08a8a" }}>{error}</span> : null}
-                    <span style={{ flex: 1 }} />
-                    {draft ? (
+                    {editing ? (
                         <>
-                            <code>{JSON.stringify({ kind: draft.kind, id: draft.id, baseId: draft.baseId, fields: draft.fields })}</code>
-                            <button style={styles.input} onClick={() => void save()}>Save overlay</button>
-                            <button style={styles.input} onClick={() => setDraft(null)}>Discard</button>
+                            <code>{JSON.stringify({ kind: editing.kind, id: editing.id, baseId: editing.baseId, fields: editing.overrides })}</code>
+                            <button style={styles.input} onClick={() => void save()}>Save</button>
+                            <button style={styles.input} onClick={() => { setEditing(null); setCell(null); setStatus("discarded"); }}>Discard</button>
+                            <span style={{ color: "#7f8899" }}>{Object.keys(editing.overrides).length} overridden</span>
                         </>
+                    ) : null}
+                    <span style={{ flex: 1 }} />
+                    {shown && !editing ? (
+                        <button style={{ ...styles.input, color: "#8fd18f" }} onClick={() => void openCreate(shown.exists ? shown : null)}>+ New based on this</button>
                     ) : null}
                 </div>
             </div>

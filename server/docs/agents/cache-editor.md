@@ -145,9 +145,16 @@ non-`http:` world.
   Kinds without a builder fall back to merging `models`/`modelIds` directly. A sequence plays at 120 ms per frame while the tab is open: a loc's `seqId`,
   an npc's `idleSeqId`, a graphic's `animationId`. A definition with no models says so, and a model
   missing from the archive names the id rather than drawing an empty square.
-- **Draft (footer):** the `{ kind, id, baseId, fields }` row as it will be written, with local
-  validation (overlay id range, base exists, something overridden) before the server's own audit runs.
-  Save reports "restart to apply".
+- **New element:** `+ New` asks for a **type**, an optional **starting definition** ("starts from" —
+  the base an overlay overrides; blank means a bare field list), a **name**, and an **id** that is
+  pre-filled with the next free overlay id, computed from the authoring document so it never collides
+  with the cache or an earlier overlay. `+ New based on this` in the footer starts the same flow with
+  the selected entry already chosen.
+- **Editing:** after Create the ordinary tabs open on the new element, and **every value cell is
+  editable in place** — click, type, Enter. Values are parsed by field type (booleans, integers,
+  arrays as `a, b, c`, strings), overridden cells turn green, and with a base the table is pre-filled
+  from it so an override is visible against what it replaces. `Save` writes only the changed fields
+  and reports "restart to apply"; `Discard` drops the session.
 
 The page holds no cache knowledge of its own: every field name, kind, name and link state comes from
 the server, so the field table stays the single place that decides what the editor can say.

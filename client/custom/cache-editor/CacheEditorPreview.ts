@@ -100,6 +100,11 @@ export type PreviewRequest = {
     /** For locs: which placement shape to draw, and which quarter-turn. */
     shape?: LocModelType;
     rotation?: number;
+    /** Drag-to-orbit: degrees added to the definition's own orientation. */
+    yaw?: number;
+    pitch?: number;
+    /** Wheel zoom, multiplied into the auto-fit scale. */
+    zoom?: number;
 };
 
 const SHAPE_LABELS: Partial<Record<LocModelType, string>> = {
@@ -115,6 +120,60 @@ const SHAPE_LABELS: Partial<Record<LocModelType, string>> = {
 };
 
 export const shapeLabel = (type: LocModelType): string => SHAPE_LABELS[type] ?? `shape ${type}`;
+
+/**
+ * Crops a rendered model to its non-empty pixels and scales it to fill `size`, centred. Keeps the
+ * aspect ratio, leaves a small margin, and supersamples by the device pixel ratio so edges are not
+ * soft on a retina display.
+ */
+function fitToCanvas(source: HTMLCanvasElement, size: number, zoom = 1): { canvas: HTMLCanvasElement; width: number; height: number } | null {
+    if (typeof document === "undefined") return null;
+    const sourceContext = source.getContext("2d");
+    if (!sourceContext || !source.width || !source.height) return null;
+    let pixels: ImageData;
+    try {
+        pixels = sourceContext.getImageData(0, 0, source.width, source.height);
+    } catch {
+        // A tainted canvas cannot be read; draw it untrimmed rather than fail.
+        return { canvas: source, width: source.width, height: source.height };
+    }
+    let minX = source.width;
+    let minY = source.height;
+    let maxX = -1;
+    let maxY = -1;
+    for (let y = 0; y < source.height; y++) {
+        for (let x = 0; x < source.width; x++) {
+            if (pixels.data[(y * source.width + x) * 4 + 3] < 8) continue;
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+        }
+    }
+    if (maxX < minX || maxY < minY) return null;
+    const width = maxX - minX + 1;
+    const height = maxY - minY + 1;
+    const ratio = Math.min(1, Math.max(1, typeof window === "undefined" ? 1 : window.devicePixelRatio || 1));
+    const padding = Math.max(4, Math.round(size * 0.06));
+    const available = size - padding * 2;
+    const scale = Math.min(available / width, available / height) * Math.max(0.25, Math.min(8, zoom));
+    const canvas = document.createElement("canvas");
+    const target = Math.max(1, Math.round(size * ratio));
+    canvas.width = target;
+    canvas.height = target;
+    const context = canvas.getContext("2d");
+    if (!context) return null;
+    context.imageSmoothingEnabled = true;
+    context.drawImage(
+        source,
+        minX, minY, width, height,
+        Math.round(((size - width * scale) / 2) * ratio),
+        Math.round(((size - height * scale) / 2) * ratio),
+        Math.round(width * scale * ratio),
+        Math.round(height * scale * ratio),
+    );
+    return { canvas, width: target, height: target };
+}
 
 export type PreviewRenderer = {
     /** Draws a request into the canvas, or explains why it cannot. */
@@ -176,7 +235,7 @@ export function createPreviewRenderer(client: OsrsClient): PreviewRenderer {
             const types: LocModelType[] = type?.types?.length ? [...type.types] : [LocModelType.NORMAL];
             return types.map((entry) => ({ type: entry, label: shapeLabel(entry) }));
         },
-        draw(canvas, { kind, id, spec, shape = LocModelType.NORMAL, rotation = 0 }, size = 220) {
+        draw(canvas, { kind, id, spec, shape = LocModelType.NORMAL, rotation = 0, yaw = 0, pitch = 0, zoom = 1 }, size = 320) {
             if (!client.objTypeLoader || !client.modelLoader) return "Waiting for the cache to load…";
             const context = canvas.getContext("2d");
             if (!context) return "This browser cannot draw a 2D canvas";
@@ -184,6 +243,13 @@ export function createPreviewRenderer(client: OsrsClient): PreviewRenderer {
             canvas.height = size;
             context.clearRect(0, 0, size, size);
             if (!spec) return "This definition has no models to draw";
+            // 2048 angle units per turn, the same units a definition stores.
+            const turn = 2048 / 360;
+            const orbitYaw = Math.round(yaw * turn) & 2047;
+            const orbitPitch = Math.round(pitch * turn) & 2047;
+            // Render at 2x and let the fit shrink it: a floor decoration is a few pixels tall, and
+            // scaling that straight up is what made the trapdoor blocky.
+            const renderSize = Math.min(1024, size * 2);
             // Each kind has its own builder in the client, and each differs: a loc's geometry depends
             // on the shape it is placed as, an npc's on its stance animations and transforms, an item's
             // on its model plus recolours, and a graphic's on its model plus a sequence frame.
@@ -230,17 +296,28 @@ export function createPreviewRenderer(client: OsrsClient): PreviewRenderer {
                 const drawn = renderer.renderModelInstanceToCanvasWidget(
                     model,
                     {
-                        xan2d: spec.xan2d, yan2d: spec.yan2d, zan2d: spec.zan2d,
+                        xan2d: (spec.xan2d ?? 0) + orbitPitch,
+                        yan2d: (spec.yan2d ?? 0) + orbitYaw,
+                        zan2d: spec.zan2d,
                         zoom2d: spec.zoom2d ?? 1800,
                         offsetX2d: spec.offsetX2d, offsetY2d: spec.offsetY2d,
                         ambient: spec.ambient, contrast: spec.contrast,
                         sequenceId: spec.sequenceId, sequenceFrame: spec.sequenceFrame,
                     },
-                    size,
-                    size,
+                    renderSize,
+                    renderSize,
                 );
                 if (!drawn?.canvas) return "The model renderer returned nothing";
-                context.drawImage(drawn.canvas, 0, 0);
+                // A definition's own zoom is tuned for the inventory icon or the world, so a monkey or
+                // a wall would sit in a corner of the canvas. Crop to the drawn pixels and scale that
+                // to fill the panel instead of trusting any per-kind default.
+                const fitted = fitToCanvas(drawn.canvas, size, zoom);
+                if (!fitted) return "The model drew nothing";
+                context.canvas.width = fitted.width;
+                context.canvas.height = fitted.height;
+                context.canvas.style.width = `${size}px`;
+                context.canvas.style.height = `${size}px`;
+                context.drawImage(fitted.canvas, 0, 0);
                 return null;
             } catch (error) {
                 return `Could not draw model ${spec.modelIds[0]}: ${String((error as Error).message ?? error)}`;

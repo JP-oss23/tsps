@@ -56,7 +56,7 @@ const query = (entries: Record<string, string | number | undefined>) => {
 };
 
 export const kindsPath = () => "/api/cache-kinds";
-export const fieldsPath = (kind: string) => `/api/cache-fields?${query({ kind })}`;
+export const fieldsPath = (kind: string, all = false) => `/api/cache-fields?${query({ kind, all: all ? "1" : undefined })}`;
 
 /** Kinds the browser may list: a decoder or a name map, never a bare archive with neither. */
 export const usableKinds = (kinds: readonly CacheKind[]) => kinds.filter((entry) => entry.usable !== false);
