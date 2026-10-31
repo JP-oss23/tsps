@@ -177,6 +177,7 @@ export function createPreviewRenderer(client: OsrsClient): PreviewRenderer {
             return types.map((entry) => ({ type: entry, label: shapeLabel(entry) }));
         },
         draw(canvas, { kind, id, spec, shape = LocModelType.NORMAL, rotation = 0 }, size = 220) {
+            if (!client.objTypeLoader || !client.modelLoader) return "Waiting for the cache to load…";
             const context = canvas.getContext("2d");
             if (!context) return "This browser cannot draw a 2D canvas";
             canvas.width = size;

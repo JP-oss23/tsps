@@ -49,6 +49,9 @@ export function CacheEditor({ client }: { client?: OsrsClient }) {
     const [draft, setDraft] = useState<OverlayRow | null>(null);
     const [pickable, setPickable] = useState<CacheField[]>([]);
     const [previewError, setPreviewError] = useState<string | null>(null);
+    // The editor page mounts the moment the URL asks for it, which is before the client has finished
+    // loading its cache. Draw only once the loaders exist, then retry until they do.
+    const [clientReady, setClientReady] = useState(false);
     const [frame, setFrame] = useState(0);
     const [shape, setShape] = useState<LocModelType>(LocModelType.NORMAL);
     const [rotation, setRotation] = useState(0);
@@ -160,6 +163,16 @@ export function CacheEditor({ client }: { client?: OsrsClient }) {
 
     const grouped = useMemo(() => linksByField(definition?.links), [definition]);
 
+    useEffect(() => {
+        if (clientReady) return;
+        const ready = !!client?.modelLoader && !!client?.objTypeLoader && !!client?.npcTypeLoader && !!client?.locTypeLoader;
+        if (ready) setClientReady(true);
+        else {
+            const timer = window.setTimeout(() => setClientReady(false), 500);
+            return () => window.clearTimeout(timer);
+        }
+    }, [client, clientReady]);
+
     /** A definition draws as one merged model; a sequence plays if it has frames. */
     const spec = useMemo(() => definition ? previewSpec(definition, definition.kind, frame) : null, [definition, frame]);
     const frames = useMemo(() => sequenceFrameCount(client as OsrsClient, spec?.sequenceId), [client, spec?.sequenceId]);
@@ -168,6 +181,10 @@ export function CacheEditor({ client }: { client?: OsrsClient }) {
         if (tab !== "preview" || !canvasRef.current) return;
         if (!client) {
             setPreviewError("No client attached, so the model renderer is unavailable");
+            return;
+        }
+        if (!clientReady) {
+            setPreviewError("Waiting for the cache to load…");
             return;
         }
         rendererRef.current ??= createPreviewRenderer(client);
@@ -179,7 +196,7 @@ export function CacheEditor({ client }: { client?: OsrsClient }) {
         setPreviewError(rendererRef.current.draw(canvasRef.current, {
             kind: definition?.kind ?? "", id: definition?.id ?? 0, spec, shape, rotation,
         }));
-    }, [client, definition?.id, definition?.kind, rotation, shape, spec, tab]);
+    }, [client, clientReady, definition?.id, definition?.kind, rotation, shape, spec, tab]);
 
     // Animate a sequence while its tab is open, at the frame delay the cache declares.
     useEffect(() => {
@@ -203,7 +220,7 @@ export function CacheEditor({ client }: { client?: OsrsClient }) {
                     <select style={{ ...styles.input, flex: 1 }} value={kind} onChange={(event) => { setKind(event.target.value); setHits([]); }}>
                         {kinds.map((entry) => (
                             <option key={entry.kind} value={entry.kind}>
-                                {entry.label} {entry.count ? `(${entry.count})` : entry.decoded ? "" : "(no decoder)"}
+                                {entry.label} {entry.count ? `(${entry.count})` : entry.decoded ? "" : "(names only)"}
                             </option>
                         ))}
                     </select>
