@@ -100,6 +100,29 @@ clients, and a restart notice after saving. `Catalog.CacheEditor.plugin.js` serv
 
 Saving writes overlay rows; **applying them to the running world is still the open piece**.
 
+## The page
+
+`?cache=1` loads `client/custom/cache-editor/` on demand (lazy, so the game bundle is untouched) and
+takes over the screen. Reads go through `fetchContent` on the world's own origin; writes go only to
+the loopback authoring service, whose port is derived as the content port + 1101 and refused for any
+non-`http:` world.
+
+- **Browser (left):** a kind selector with counts, then name/id search. Rows show `kind id name`, and
+  a `custom` badge for overlay items.
+- **Inspector (right):** `values`, `links`, `used by`, `transforms`.
+  - Every link is a link: clicking `seq 3206` inspects that sequence, with a back arrow over the
+    visited trail.
+  - `links` is where a draft is built: each target has a **use** button that puts that id into the
+    draft's field, so "this loc should use that graphic" is one click, not an id typed from memory.
+  - `transforms` shows the gating variable, the children, which one is the fallback, and — with a
+    player — which child that player currently sees.
+- **Draft (footer):** the `{ kind, id, baseId, fields }` row as it will be written, with local
+  validation (overlay id range, base exists, something overridden) before the server's own audit runs.
+  Save reports "restart to apply".
+
+The page holds no cache knowledge of its own: every field name, kind, name and link state comes from
+the server, so the field table stays the single place that decides what the editor can say.
+
 Order, because each step is what the next one reads:
 
 1. ~~`seq`, `spotanim` decoders~~ — done.

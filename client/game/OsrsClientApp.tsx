@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
+
 import { registerSerializer } from "threads";
 import WebFont from "webfontloader";
 
@@ -41,6 +42,9 @@ import { useSafariLandscapeLock } from "./useSafariLandscapeLock";
 import { useViewportCssVars } from "./useViewportCssVars";
 import { renderDataLoaderSerializer } from "./worker/RenderDataLoader";
 import { RenderDataWorkerPool } from "./worker/RenderDataWorkerPool";
+
+// A tool page, loaded only when the URL asks for it (?cache=1), so the game bundle is untouched.
+const CacheEditor = lazy(() => import("../custom/cache-editor/CacheEditor").then((module) => ({ default: module.CacheEditor })));
 
 registerSerializer(renderDataLoaderSerializer);
 
@@ -657,6 +661,15 @@ function OsrsClientApp() {
     ]
         .filter((name) => name.length > 0)
         .join(" ");
+
+    const cacheEditor = new URLSearchParams(window.location.search).get("cache") === "1";
+    if (cacheEditor) {
+        return (
+            <Suspense fallback={<p style={{ padding: 16 }}>Loading cache editor…</p>}>
+                <CacheEditor />
+            </Suspense>
+        );
+    }
 
     return (
         <div className={appClassName}>
