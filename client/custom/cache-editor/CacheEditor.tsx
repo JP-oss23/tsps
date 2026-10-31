@@ -62,7 +62,20 @@ export function CacheEditor({ client }: { client?: OsrsClient }) {
     const [status, setStatus] = useState<string>("ready");
     const [error, setError] = useState<string | null>(null);
 
-    const contentBase = useMemo(() => getContentApiBase(), []);
+    // The page can mount before the client has initialised its world URL, and `fetchContent` needs it.
+    // Poll until it exists, then read; otherwise the first failed fetch leaves an empty browser.
+    const [contentBase, setContentBase] = useState<string | undefined>(() => getContentApiBase());
+    useEffect(() => {
+        if (contentBase) return;
+        const timer = window.setInterval(() => {
+            const base = getContentApiBase();
+            if (base) {
+                setContentBase(base);
+                window.clearInterval(timer);
+            }
+        }, 500);
+        return () => window.clearInterval(timer);
+    }, [contentBase]);
     const authoring = useMemo(() => authoringBase(contentBase), [contentBase]);
 
     const load = useCallback(async (path: string) => {
@@ -77,6 +90,7 @@ export function CacheEditor({ client }: { client?: OsrsClient }) {
     }, []);
 
     useEffect(() => {
+        if (!contentBase) return;
         void (async () => {
             const body = await load(kindsPath());
             if (body?.kinds) {
@@ -85,7 +99,7 @@ export function CacheEditor({ client }: { client?: OsrsClient }) {
                 if (first) setKind(first.kind);
             }
         })();
-    }, [load]);
+    }, [contentBase, load]);
 
     const inspect = useCallback(async (nextKind: string, id: number, push = true) => {
         setError(null);
@@ -100,10 +114,14 @@ export function CacheEditor({ client }: { client?: OsrsClient }) {
 
     const runSearch = useCallback(async (needle = text, within = kind) => {
         if (!needle.trim()) return;
+        if (!contentBase) {
+            setError("Waiting for the client to connect before searching");
+            return;
+        }
         setError(null);
         const body = await load(searchPath(needle, within));
         if (body?.hits) setHits(body.hits);
-    }, [kind, load, text]);
+    }, [contentBase, kind, load, text]);
 
     const loadUsedBy = useCallback(async () => {
         if (!definition) return;
@@ -252,6 +270,8 @@ export function CacheEditor({ client }: { client?: OsrsClient }) {
                     <strong>{definition ? `${definition.kind} ${definition.id}` : "nothing selected"}</strong>
                     <span style={{ color: "#9aa3b2" }}>{definition?.name ?? (definition ? "unnamed" : "")}</span>
                     {definition && !definition.exists ? <span style={{ color: "#e08a8a" }}>{definition.note}</span> : null}
+                    {!contentBase ? <span style={{ color: "#c9b06a" }}>waiting for the client to connect…</span> : null}
+                    {error ? <span style={{ color: "#e08a8a" }}>{error}</span> : null}
                     <span style={{ flex: 1 }} />
                     {definition?.exists ? <button style={styles.input} onClick={startDraft}>Override as new {definition.kind}</button> : null}
                 </div>
