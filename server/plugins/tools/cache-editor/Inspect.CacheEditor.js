@@ -115,13 +115,13 @@ function describe(core, { kind, id, player = null, skipUnset = true }) {
   const out = {
     kind,
     id,
+    exists: true,
     name: nameOf(core, kind, id),
     label: entry.label,
     custom: kind === "item" && id >= CUSTOM_ITEM_RANGE ? customItems(core).some((row) => row.id === id) : false,
   };
   if (!definition) {
     out.note = `No ${kind} decoder on this server yet; the id and its name resolve, its fields do not.`;
-    out.exists = resolveId(core, kind, id) !== "missing";
     return out;
   }
   const list = Array.isArray(definition) ? definition : null;

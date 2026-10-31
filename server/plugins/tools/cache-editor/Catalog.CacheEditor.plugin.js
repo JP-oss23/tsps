@@ -21,7 +21,7 @@ function limitOf(query) {
   return Number.isInteger(limit) && limit > 0 && limit <= 100 ? limit : 20;
 }
 
-module.exports = function registerCacheEditor(api) {
+function register(api) {
   const { core } = api;
   api.registerContentEndpoint("cache-kinds", () => ({ kinds: inspect.kinds(core) }));
   api.registerContentEndpoint("cache-inspect", (query) => inspect.describe(core, {
@@ -41,4 +41,6 @@ module.exports = function registerCacheEditor(api) {
     id: number(query, "id"),
     limit: limitOf(query),
   }));
-};
+}
+
+module.exports = { name: "CacheEditorCatalog", register };

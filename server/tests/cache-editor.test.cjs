@@ -288,7 +288,8 @@ test("saving writes the document atomically, checks the budget, and refuses stal
 
 test("the read-only content endpoints serve what the MCP tools serve", () => {
   const endpoints = new Map();
-  Catalog({ core, registerContentEndpoint: (name, handler) => endpoints.set(name, handler) });
+  assert.equal(Catalog.name, "CacheEditorCatalog");
+  Catalog.register({ core, registerContentEndpoint: (name, handler) => endpoints.set(name, handler) });
   assert.deepEqual([...endpoints.keys()].sort(), ["cache-inspect", "cache-kinds", "cache-search", "cache-used-by"]);
 
   const kinds = endpoints.get("cache-kinds")(new URLSearchParams(), []);
