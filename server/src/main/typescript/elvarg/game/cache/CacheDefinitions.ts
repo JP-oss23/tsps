@@ -269,6 +269,21 @@ export class CacheDefinitions {
         return this.getGamevals().namesOf(GamevalKind.OBJ);
     }
 
+    /** Every named graphic: id -> gameval name. */
+    static getSpotanimNames(): ReadonlyMap<number, string> {
+        return this.getGamevals().namesOf(GamevalKind.SPOTANIM);
+    }
+
+    /** Every named varp: id -> gameval name. */
+    static getVarpNames(): ReadonlyMap<number, string> {
+        return this.getGamevals().namesOf(GamevalKind.VARP);
+    }
+
+    /** Every named inventory: id -> gameval name. */
+    static getInventoryNames(): ReadonlyMap<number, string> {
+        return this.getGamevals().namesOf(GamevalKind.INV);
+    }
+
     /** Every named NPC: id -> gameval name. */
     static getNpcNames(): ReadonlyMap<number, string> {
         return this.getGamevals().namesOf(GamevalKind.NPC);
