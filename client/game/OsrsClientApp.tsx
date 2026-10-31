@@ -662,19 +662,20 @@ function OsrsClientApp() {
         .filter((name) => name.length > 0)
         .join(" ");
 
+    // The editor is an overlay, not a replacement: the client only finishes loading its cache once
+    // GameContainer has rendered, so hiding the game behind an early return leaves every preview
+    // waiting for loaders that never arrive.
     const cacheEditor = new URLSearchParams(window.location.search).get("cache") === "1";
-    if (cacheEditor) {
-        return (
-            <Suspense fallback={<p style={{ padding: 16 }}>Loading cache editor…</p>}>
-                <CacheEditor client={osrsClient} />
-            </Suspense>
-        );
-    }
 
     return (
         <div className={appClassName}>
             {bannerWrapper}
             {content}
+            {cacheEditor ? (
+                <Suspense fallback={null}>
+                    <CacheEditor client={osrsClient} />
+                </Suspense>
+            ) : null}
         </div>
     );
 }
